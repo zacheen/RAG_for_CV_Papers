@@ -1,75 +1,113 @@
 # Development Setup
 
-## Prerequisites
+This project uses a **two-phase workflow**:
+1. **Phase 1 (Local)** — Crawl arXiv, parse PDFs, build ChromaDB vector database
+2. **Phase 2 (GCP)** — Upload database, run LLM + Streamlit on GPU VM
 
-- Python 3.10+
-- Docker (for containerized deployment)
-- Ollama installed locally (for local development without Docker)
+---
 
-## Local Development
+## Phase 1: Local Ingestion
 
-### 1. Install dependencies
+### Prerequisites
 
 ```bash
-pip install -r requirements.txt
+pip install PyMuPDF chromadb sentence-transformers
 ```
 
-### 2. Start Ollama and pull LLaMA
+No GPU or Ollama needed for this phase.
+
+### Paper Selection Criteria
+
+The ingestion script queries the [arXiv API](https://info.arxiv.org/help/api/index.html) with the following defaults:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Category | `cs.CV` | Computer Vision and Pattern Recognition |
+| Sort by | `submittedDate` | Most recently submitted papers first |
+| Sort order | `descending` | Newest first |
+| Max results | `800` | Target: 800 papers x ~20 chunks = ~16k entries (>10k requirement) |
+| Query filter | (none) | Optional free-text filter via `--query` |
+
+### Run Ingestion
 
 ```bash
-ollama serve &
-ollama pull llama3.2
-```
+# Default: download 800 latest cs.CV papers and build vector database
+python scripts/ingest.py --max-papers 800
 
-### 3. Run ingestion
+# Filter by topic
+python scripts/ingest.py --query "object detection" --max-papers 800
 
-```bash
-# Download and index 50 papers (default)
-python scripts/ingest.py --max-papers 50
-
-# With a search query filter
-python scripts/ingest.py --query "object detection" --max-papers 100
-
-# Process already-downloaded PDFs only
+# Process already-downloaded PDFs only (skip arXiv API + download)
 python scripts/ingest.py --skip-download
 ```
 
-### 4. Run the Streamlit app
+### Output
+
+```
+data/
+  pdfs/          # Downloaded PDF files (~800 files)
+  chroma_db/     # Vector database (this gets uploaded to GCP)
+```
+
+### Verify
 
 ```bash
+python -c "from src.processing.embedder import get_collection_stats; print(get_collection_stats())"
+```
+
+Should show `total_chunks >= 10000`.
+
+### Time Estimate
+
+| Stage | Duration |
+|-------|----------|
+| arXiv API search | ~30 seconds |
+| PDF download (rate-limited) | ~15 minutes |
+| PDF parsing | ~5 minutes |
+| Chunking + embedding + indexing | ~10-30 minutes |
+| **Total** | **~30-60 minutes** |
+
+---
+
+## Phase 2: GCP Serving
+
+For full GCP deployment instructions, see [gcp-deployment.md](gcp-deployment.md).
+
+Summary:
+1. Upload `data/` folder to GCP VM via `gcloud compute scp`
+2. Docker container runs Ollama (LLaMA 3.2) + Streamlit
+3. No ingestion runs on GCP — it only serves queries
+
+### Local Development (optional)
+
+If you want to test the full RAG locally (requires Ollama installed):
+
+```bash
+# Start Ollama and pull LLaMA
+ollama serve &
+ollama pull llama3.2
+
+# Run the Streamlit app
 streamlit run app.py
 ```
 
-Open http://localhost:8501 in your browser.
+Open http://localhost:8501
 
-## Docker Deployment
-
-### Build and run
-
-```bash
-docker build -t cv-paper-rag .
-docker run -p 8501:8501 -p 11434:11434 -v ./data:/root/data cv-paper-rag
-```
-
-The container will:
-1. Start the Ollama server
-2. Pull LLaMA 3.2 (first run only)
-3. Run ingestion if no indexed data exists
-4. Start the Streamlit app on port 8501
+---
 
 ## Project Structure
 
 ```
 final_project/
   app.py                      # Streamlit RAG chatbot UI
-  requirements.txt             # Python dependencies
-  Dockerfile                   # Single container (Ollama + app)
-  entrypoint.sh                # Container startup script
+  requirements.txt             # Python dependencies (all)
+  Dockerfile                   # Single container (Ollama + Streamlit)
+  entrypoint.sh                # Container startup (Ollama + Streamlit only)
   .gitignore
   CLAUDE.md                    # Agent guidance
   project-description.pdf      # Course assignment spec
   scripts/
-    ingest.py                  # CLI ingestion pipeline
+    ingest.py                  # CLI ingestion pipeline (run locally)
   src/
     config.py                  # Centralized configuration
     ingestion/
@@ -85,9 +123,7 @@ final_project/
   docs/                        # Project documentation
 ```
 
-## Testing
-
-Run individual modules:
+## Testing Individual Modules
 
 ```bash
 # Test arXiv search (returns metadata, no download)

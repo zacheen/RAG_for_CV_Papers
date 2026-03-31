@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Skill(flux:repo:init)",
-      "Skill(flux:repo:init:*)"
+      "Skill(flux:repo:init:*)",
+      "Bash(python -c \"import fitz; import chromadb; import sentence_transformers; print\\(''All dependencies OK''\\)\")"
     ]
   }
 }

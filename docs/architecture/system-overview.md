@@ -6,43 +6,61 @@ The system is a **Retrieval-Augmented Generation (RAG)** pipeline for computer v
 
 ### Pipeline Stages
 
-1. **Data Ingestion** — Download and parse arXiv CV papers (PDFs or LaTeX source)
-2. **Preprocessing** — Extract text, clean, and normalize academic content (equations, figures, references)
-3. **Chunking** — Split papers into semantically meaningful chunks (by section, paragraph, or sliding window)
-4. **Embedding** — Generate vector embeddings for each chunk using a sentence-transformer model
-5. **Indexing** — Store embeddings in a vector database for efficient similarity search
-6. **Retrieval** — Given a user query, retrieve the top-k most relevant chunks
-7. **Generation** — Feed retrieved context + query to an open-source LLM to generate an answer
+1. **Data Ingestion** — Search arXiv API for cs.CV papers, download PDFs (`src/ingestion/arxiv_downloader.py`)
+2. **PDF Parsing** — Extract text from PDFs via PyMuPDF (`src/ingestion/pdf_parser.py`)
+3. **Chunking** — Recursive semantic splitting into ~512-char chunks with overlap (`src/processing/chunker.py`)
+4. **Embedding & Indexing** — Embed with all-MiniLM-L6-v2, store in ChromaDB (`src/processing/embedder.py`)
+5. **Retrieval** — Cosine similarity search in ChromaDB for top-k chunks (`src/rag/retriever.py`)
+6. **Generation** — LLaMA 3.2 via Ollama with RAG prompt template (`src/rag/generator.py`)
+7. **UI** — Streamlit chat interface with streaming responses (`app.py`)
 
 ### Component Diagram
 
 ```
-[arXiv API / Bulk Download]
-        |
-        v
-[PDF/LaTeX Parser] --> [Text Preprocessor] --> [Chunker]
-                                                   |
-                                                   v
-                                            [Embedding Model]
-                                                   |
-                                                   v
-                                            [Vector Store]
-                                                   |
-        [User Query] --> [Query Encoder] --------->|
-                                                   |
-                                                   v
-                                          [Retriever (top-k)]
-                                                   |
-                                                   v
-                                    [Prompt Builder (query + context)]
-                                                   |
-                                                   v
-                                          [Open-Source LLM]
-                                                   |
-                                                   v
-                                        [Generated Answer]
+[arXiv API]
+     |
+     v
+[arxiv_downloader.py] --> [pdf_parser.py] --> [chunker.py]
+                                                    |
+                                                    v
+                                            [embedder.py]
+                                          (all-MiniLM-L6-v2)
+                                                    |
+                                                    v
+                                              [ChromaDB]
+                                                    |
+    [User Query via Streamlit] ---------------->    |
+                                                    v
+                                           [retriever.py]
+                                             (top-k cosine)
+                                                    |
+                                                    v
+                                           [generator.py]
+                                         (LLaMA 3.2 / Ollama)
+                                                    |
+                                                    v
+                                        [Streamed answer in UI]
 ```
 
-## Key Design Decisions (TBD)
+### Tech Stack
 
-See [design-decisions.md](design-decisions.md) for open choices that need to be resolved before implementation.
+| Component | Technology |
+|-----------|-----------|
+| Data source | arXiv API (cs.CV category) |
+| PDF parsing | PyMuPDF (fitz) |
+| Chunking | Custom recursive splitter |
+| Embeddings | all-MiniLM-L6-v2 (sentence-transformers) |
+| Vector store | ChromaDB (persistent, cosine distance) |
+| LLM | LLaMA 3.2 via Ollama |
+| UI | Streamlit |
+| Deployment | Docker (single container: Ollama + Streamlit) |
+
+## Configuration
+
+All settings are centralized in `src/config.py`:
+- Paths, arXiv parameters, chunk sizes, model names, prompt templates
+- Ollama base URL is configurable via `OLLAMA_BASE_URL` env var
+
+## Design Decisions
+
+See [design-decisions.md](design-decisions.md) for the full decision log.

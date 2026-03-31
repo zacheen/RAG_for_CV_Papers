@@ -1,51 +1,47 @@
 # CS 6120 NLP Final Project — RAG for Computer Vision Papers
 
-A Retrieval-Augmented Generation system that ingests arXiv computer vision papers and enables semantic Q&A using an open-source LLM.
+A Retrieval-Augmented Generation system that ingests arXiv computer vision papers and enables semantic Q&A using LLaMA 3.2 via Ollama.
 
 ## Quick Links
 
 | Resource | Location |
 |----------|----------|
-| Project requirements | [docs/project/requirements.md](project/requirements.md) |
-| System architecture | [docs/architecture/system-overview.md](architecture/system-overview.md) |
-| Open design decisions | [docs/architecture/design-decisions.md](architecture/design-decisions.md) |
-| Development setup | [docs/development/setup.md](development/setup.md) |
+| System architecture | [architecture/system-overview.md](architecture/system-overview.md) |
+| Design decisions log | [architecture/design-decisions.md](architecture/design-decisions.md) |
+| Development setup & running | [development/setup.md](development/setup.md) |
+| Course requirements | [project/requirements.md](project/requirements.md) |
 | Lessons learned | [LESSONS.md](LESSONS.md) |
-| Project description (PDF) | [project-description.pdf](../project-description.pdf) |
+| Project description (PDF) | [../project-description.pdf](../project-description.pdf) |
+| Configuration | [../src/config.py](../src/config.py) |
 
 ## Architecture at a Glance
 
-The system follows a standard RAG pipeline:
-
-**Ingestion** (arXiv download) -> **Parsing** (PDF/LaTeX) -> **Chunking** -> **Embedding** -> **Vector Store** -> **Retrieval** -> **LLM Generation**
-
-For details, see [system-overview.md](architecture/system-overview.md).
-
-## Open Design Decisions
-
-Six design choices remain open before implementation can begin. See [design-decisions.md](architecture/design-decisions.md) for the full options matrix covering:
-
-1. PDF parsing strategy
-2. Chunking strategy
-3. Embedding model
-4. Vector store
-5. Open-source LLM selection
-6. Deployment / serving approach
-
-## Project Structure (Planned)
-
 ```
-final_project/
-  CLAUDE.md                 # Agent guidance
-  project-description.pdf   # Course assignment spec
-  docs/
-    README.md               # This file (reference index)
-    LESSONS.md              # Sessions and lessons learned
-    architecture/           # System design docs
-    development/            # Setup, running, testing guides
-    project/                # Requirements and course deliverables
-  src/                      # (TBD) Application source code
-  data/                     # (TBD) Data scripts and sample data
-  Dockerfile                # (TBD) Container definition
-  requirements.txt          # (TBD) Python dependencies
+arXiv API -> PyMuPDF -> Recursive Chunker -> all-MiniLM-L6-v2 -> ChromaDB -> LLaMA 3.2 -> Streamlit
 ```
+
+For the full diagram and tech stack, see [system-overview.md](architecture/system-overview.md).
+
+## Getting Started
+
+See [development/setup.md](development/setup.md) for:
+- Local development setup
+- Docker deployment
+- Running the ingestion pipeline
+- Project file structure
+
+## Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `app.py` | Streamlit chat UI with RAG |
+| `scripts/ingest.py` | CLI to download, parse, chunk, and index papers |
+| `src/config.py` | All configuration (paths, models, prompts) |
+| `src/ingestion/arxiv_downloader.py` | arXiv API search and PDF download |
+| `src/ingestion/pdf_parser.py` | PyMuPDF text extraction |
+| `src/processing/chunker.py` | Recursive semantic text splitting |
+| `src/processing/embedder.py` | Embedding + ChromaDB indexing |
+| `src/rag/retriever.py` | Vector similarity retrieval |
+| `src/rag/generator.py` | Ollama/LLaMA streaming generation |
+| `Dockerfile` | Single container (Ollama + Streamlit) |
+| `entrypoint.sh` | Container startup (Ollama + model pull + ingestion + app) |

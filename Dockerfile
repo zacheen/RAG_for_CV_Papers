@@ -13,6 +13,6 @@ COPY . .
 
 EXPOSE 8501
 EXPOSE 11434
-RUN chmod +x entrypoint.sh
+RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh
 ENTRYPOINT ["./entrypoint.sh"]
 

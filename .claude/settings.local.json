@@ -3,7 +3,20 @@
     "allow": [
       "Skill(flux:repo:init)",
       "Skill(flux:repo:init:*)",
-      "Bash(python -c \"import fitz; import chromadb; import sentence_transformers; print\\(''All dependencies OK''\\)\")"
+      "Bash(python -c \"import fitz; import chromadb; import sentence_transformers; print\\(''All dependencies OK''\\)\")",
+      "Bash(python -c \"from src.processing.embedder import get_collection_stats; stats = get_collection_stats\\(\\); print\\(f''Total chunks: {stats[\"\"total_chunks\"\"]}''\\)\")",
+      "Bash(find D:/dont_move/Northeastern_University/CS6120/final_project/data/chroma_db/ -type f -exec ls -lh {})",
+      "Bash(2)",
+      "Bash(gcloud compute:*)",
+      "Bash(where gcloud:*)",
+      "Read(//c/Program Files/Google/Cloud SDK/google-cloud-sdk/bin/**)",
+      "Read(//c/Users/User/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/**)",
+      "Bash(cmd.exe /c \"where gcloud\")",
+      "Bash(mv batch2-ssh.ps1 _old_batch2-ssh.ps1)",
+      "Bash(mv batch3-vm-setup.sh _old_batch3-vm-setup.sh)",
+      "Bash(mv batch4-upload.ps1 _old_batch4-upload.ps1)",
+      "Bash(mv batch5-verify-upload.ps1 _old_batch5-verify-upload.ps1)",
+      "Bash(mv batch6-docker-run.sh _old_batch6-docker-run.sh)"
     ]
   }
 }

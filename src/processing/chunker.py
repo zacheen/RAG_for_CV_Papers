@@ -95,7 +95,7 @@ def _apply_overlap(chunks: list[str], overlap: int) -> list[str]:
 
 def chunk_document(text: str, paper_id: str = "",
                    title: str = "", arxiv_url: str = "",
-                   authors: str = "", published: str = "") -> list[dict]:
+                   authors: str = "", published: str = "", hf_date: str = "") -> list[dict]:
     """Chunk a document and attach metadata to each chunk.
 
     Args:
@@ -105,6 +105,7 @@ def chunk_document(text: str, paper_id: str = "",
         arxiv_url: arXiv abstract URL for citation linking.
         authors: Comma-separated author names.
         published: Publication date string.
+        hf_date: Hugging Face daily paper date string (YYYY-MM-DD).
 
     Returns:
         List of dicts with text and metadata keys.
@@ -119,6 +120,7 @@ def chunk_document(text: str, paper_id: str = "",
             "arxiv_url": arxiv_url,
             "authors": authors,
             "published": published,
+            "hf_date": hf_date,
         }
         for i, chunk in enumerate(raw_chunks)
     ]

@@ -15,6 +15,7 @@ with st.sidebar:
     st.header("Settings")
     your_name = st.text_input("Your name")
     top_k = st.slider("Number of retrieved chunks", 1, 20, TOP_K)
+    recent_only = st.checkbox("Only search recent 7 days CV recommendations")
     model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
 
     st.divider()
@@ -76,7 +77,8 @@ if prompt := st.chat_input("Ask a question about computer vision papers..."):
     # Retrieve relevant chunks
     with st.chat_message("assistant"):
         try:
-            results = retrieve(prompt, top_k=top_k)
+            recent_days = 7 if recent_only else None
+            results = retrieve(prompt, top_k=top_k, recent_days=recent_days)
         except Exception as e:
             st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
             st.stop()

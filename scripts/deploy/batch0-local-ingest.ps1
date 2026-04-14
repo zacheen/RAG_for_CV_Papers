@@ -1,4 +1,4 @@
-# Batch 0 [PS] - Local Ingestion
+# Batch 0 [PS] - Local Ingestion (downloading papers and save them into vector DB)
 # Run from project root: D:\dont_move\Northeastern_University\CS6120\final_project
 
 pip install PyMuPDF chromadb sentence-transformers

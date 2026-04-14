@@ -1,4 +1,6 @@
 #!/bin/bash
+
+# after SSH, execute in the VM : bash XX.sh
 # Batch 7 [SSH] - Verify GPU & Install Docker + NVIDIA Container Toolkit
 
 nvidia-smi

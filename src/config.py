@@ -35,9 +35,11 @@ TOP_K = 5
 # RAG prompt template
 RAG_SYSTEM_PROMPT = (
     "You are a research assistant specializing in computer vision. "
-    "Answer the user's question based mainly on the provided context from "
-    "arXiv computer vision papers. If the context does not contain enough "
-    "information, say so. Cite the paper titles when possible."
+    "Answer the user's question using only the provided context from "
+    "arXiv computer vision papers. Do not use outside knowledge or infer "
+    "details from papers that are not in the supplied context. If the context "
+    "does not contain enough information, say so clearly. Cite the paper "
+    "titles when possible."
 )
 
 RAG_USER_TEMPLATE = (

@@ -19,6 +19,7 @@ if [ ! -d "/root/data/chroma_db" ] || [ -z "$(ls -A /root/data/chroma_db 2>/dev/
     echo "See docs/development/gcp-deployment.md for instructions."
 fi
 
-# Start the streamlit server, blocking exit
+# Start the streamlit server, blocking exit. Disable source watching to avoid
+# optional transformers image modules being imported during watcher scans.
 echo "Starting the Streamlit server"
-streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+streamlit run app.py --server.port=8501 --server.address=0.0.0.0 --server.fileWatcherType none

@@ -3,19 +3,132 @@
 import streamlit as st
 
 from src.config import OLLAMA_MODEL, TOP_K
-from src.processing.embedder import get_collection, get_collection_stats
-from src.rag.retriever import retrieve, format_context
+from src.processing.embedder import get_collection_stats
 from src.rag.generator import generate_answer_stream
+from src.rag.retriever import format_context, retrieve
 
-# --- Page config ---
-st.set_page_config(page_title="CV Paper RAG", page_icon="📄", layout="wide")
+WEEKLY_SUMMARY_PROMPT = (
+    "Please summarize the newest computer vision papers from the last 7 days. "
+    "Group the answer into: 1) key themes, 2) notable papers, 3) why they matter, "
+    "and 4) open questions. Only use the retrieved papers and explicitly mention "
+    "when the context is insufficient."
+)
 
-# --- Sidebar ---
+
+def run_query(prompt: str, top_k: int, recent_days: int | None, model_name: str) -> None:
+    """Execute one RAG query and append the result to session history."""
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.write(prompt)
+
+    with st.chat_message("assistant"):
+        try:
+            results = retrieve(prompt, top_k=top_k, recent_days=recent_days)
+        except Exception as e:
+            st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
+            st.stop()
+
+        if not results:
+            response = "I couldn't find any relevant papers. Make sure the corpus has been ingested."
+            st.write(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            return
+
+        context = format_context(results)
+
+        history = []
+        for message in st.session_state.messages[-6:]:
+            if message["role"] in ("user", "assistant") and "sources" not in message:
+                history.append({"role": message["role"], "content": message["content"]})
+
+        try:
+            stream = generate_answer_stream(
+                question=prompt,
+                context=context,
+                model=model_name,
+                chat_history=history,
+            )
+            response = st.write_stream(stream)
+        except Exception as e:
+            response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
+            st.error(response)
+
+        sources = [
+            {
+                "title": result["title"],
+                "arxiv_url": result.get("arxiv_url", ""),
+                "authors": result.get("authors", ""),
+                "passage": result["text"][:300],
+                "distance": result["distance"],
+            }
+            for result in results
+        ]
+        with st.expander("Sources"):
+            for source in sources:
+                url = source.get("arxiv_url", "")
+                if url:
+                    st.markdown(
+                        f"**[{source['title']}]({url})** "
+                        f"(similarity: {1 - source['distance']:.2%})"
+                    )
+                else:
+                    st.markdown(
+                        f"**{source['title']}** "
+                        f"(similarity: {1 - source['distance']:.2%})"
+                    )
+                if source.get("authors"):
+                    st.caption(source["authors"])
+                st.markdown(
+                    f"> {source['passage']}"
+                    f"{'...' if len(source['passage']) >= 300 else ''}"
+                )
+                st.divider()
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": response,
+                "sources": sources,
+            }
+        )
+
+
+st.set_page_config(page_title="CV Paper RAG", page_icon="CV", layout="wide")
+
+if "messages" not in st.session_state:
+    st.session_state["messages"] = [
+        {
+            "role": "assistant",
+            "content": "Ask me anything about computer vision research papers!",
+        }
+    ]
+if "recent_only" not in st.session_state:
+    st.session_state["recent_only"] = False
+if "recent_scope_locked" not in st.session_state:
+    st.session_state["recent_scope_locked"] = False
+if "pending_prompt" not in st.session_state:
+    st.session_state["pending_prompt"] = None
+if "pending_top_k" not in st.session_state:
+    st.session_state["pending_top_k"] = None
+
 with st.sidebar:
     st.header("Settings")
     your_name = st.text_input("Your name")
     top_k = st.slider("Number of retrieved chunks", 1, 20, TOP_K)
-    recent_only = st.checkbox("Only search recent 7 days CV recommendations")
+    if st.button("Summarize new papers from last 7 days", use_container_width=True):
+        st.session_state["recent_only"] = True
+        st.session_state["recent_scope_locked"] = True
+        st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
+        st.session_state["pending_top_k"] = max(top_k, 12)
+    if st.session_state["recent_scope_locked"]:
+        st.caption("Recent-only mode is locked for this summary follow-up chat.")
+        if st.button("Unlock recent-only mode", use_container_width=True):
+            st.session_state["recent_scope_locked"] = False
+    recent_only = st.checkbox(
+        "Only search recent 7 days CV recommendations",
+        key="recent_only",
+        disabled=st.session_state["recent_scope_locked"],
+    )
     model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
 
     st.divider()
@@ -32,32 +145,24 @@ with st.sidebar:
         "Built for CS 6120 NLP Final Project."
     )
 
-# --- Main area ---
 if your_name:
-    st.title(f"Hi {your_name} — Ask about CV papers")
+    st.title(f"Hi {your_name} - Ask about CV papers")
 else:
-    st.title("Computer Vision Paper RAG 📄")
+    st.title("Computer Vision Paper RAG")
 
 st.caption(f"Powered by {model_name} via Ollama + ChromaDB retrieval")
 
-# --- Session state ---
-if "messages" not in st.session_state:
-    st.session_state["messages"] = [
-        {"role": "assistant", "content": "Ask me anything about computer vision research papers!"}
-    ]
-
-# --- Display chat history ---
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
         if "sources" in msg:
             with st.expander("Sources"):
-                for src in msg["sources"]:
-                    title = src.get("title", "Unknown")
-                    url = src.get("arxiv_url", "")
-                    authors = src.get("authors", "")
-                    passage = src.get("passage", "")
-                    distance = src.get("distance", 0)
+                for source in msg["sources"]:
+                    title = source.get("title", "Unknown")
+                    url = source.get("arxiv_url", "")
+                    authors = source.get("authors", "")
+                    passage = source.get("passage", "")
+                    distance = source.get("distance", 0)
                     if url:
                         st.markdown(f"**[{title}]({url})** (similarity: {1 - distance:.2%})")
                     else:
@@ -67,73 +172,9 @@ for msg in st.session_state.messages:
                     if passage:
                         st.markdown(f"> {passage[:200]}{'...' if len(passage) > 200 else ''}")
 
-# --- Chat input ---
-if prompt := st.chat_input("Ask a question about computer vision papers..."):
-    # Show user message
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.write(prompt)
-
-    # Retrieve relevant chunks
-    with st.chat_message("assistant"):
-        try:
-            recent_days = 7 if recent_only else None
-            results = retrieve(prompt, top_k=top_k, recent_days=recent_days)
-        except Exception as e:
-            st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
-            st.stop()
-
-        if not results:
-            response = "I couldn't find any relevant papers. Make sure the corpus has been ingested."
-            st.write(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-        else:
-            context = format_context(results)
-
-            # Build chat history for multi-turn (last 6 messages max)
-            history = []
-            for m in st.session_state.messages[-6:]:
-                if m["role"] in ("user", "assistant") and "sources" not in m:
-                    history.append({"role": m["role"], "content": m["content"]})
-
-            # Stream the response
-            try:
-                stream = generate_answer_stream(
-                    question=prompt,
-                    context=context,
-                    model=model_name,
-                    chat_history=history,
-                )
-                response = st.write_stream(stream)
-            except Exception as e:
-                response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
-                st.error(response)
-
-            # Show sources with clickable citations
-            sources = [
-                {
-                    "title": r["title"],
-                    "arxiv_url": r.get("arxiv_url", ""),
-                    "authors": r.get("authors", ""),
-                    "passage": r["text"][:300],
-                    "distance": r["distance"],
-                }
-                for r in results
-            ]
-            with st.expander("Sources"):
-                for src in sources:
-                    url = src.get("arxiv_url", "")
-                    if url:
-                        st.markdown(f"**[{src['title']}]({url})** (similarity: {1 - src['distance']:.2%})")
-                    else:
-                        st.markdown(f"**{src['title']}** (similarity: {1 - src['distance']:.2%})")
-                    if src.get("authors"):
-                        st.caption(src["authors"])
-                    st.markdown(f"> {src['passage']}{'...' if len(src['passage']) >= 300 else ''}")
-                    st.divider()
-
-            st.session_state.messages.append({
-                "role": "assistant",
-                "content": response,
-                "sources": sources,
-            })
+prompt = st.chat_input("Ask a question about computer vision papers...")
+active_prompt = st.session_state.pop("pending_prompt", None) or prompt
+active_top_k = st.session_state.pop("pending_top_k", None) or top_k
+if active_prompt:
+    recent_days = 7 if recent_only else None
+    run_query(active_prompt, top_k=active_top_k, recent_days=recent_days, model_name=model_name)

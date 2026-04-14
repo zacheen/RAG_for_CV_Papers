@@ -13,9 +13,18 @@ WEEKLY_SUMMARY_PROMPT = (
     "and 4) open questions. Only use the retrieved papers and explicitly mention "
     "when the context is insufficient."
 )
+WEEKLY_SUMMARY_RETRIEVAL_QUERY = (
+    "computer vision paper abstract contributions results"
+)
 
 
-def run_query(prompt: str, top_k: int, recent_days: int | None, model_name: str) -> None:
+def run_query(
+    prompt: str,
+    top_k: int,
+    recent_days: int | None,
+    model_name: str,
+    retrieval_query: str | None = None,
+) -> None:
     """Execute one RAG query and append the result to session history."""
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -23,7 +32,11 @@ def run_query(prompt: str, top_k: int, recent_days: int | None, model_name: str)
 
     with st.chat_message("assistant"):
         try:
-            results = retrieve(prompt, top_k=top_k, recent_days=recent_days)
+            results = retrieve(
+                retrieval_query or prompt,
+                top_k=top_k,
+                recent_days=recent_days,
+            )
         except Exception as e:
             st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
             st.stop()
@@ -110,6 +123,8 @@ if "pending_prompt" not in st.session_state:
     st.session_state["pending_prompt"] = None
 if "pending_top_k" not in st.session_state:
     st.session_state["pending_top_k"] = None
+if "pending_retrieval_query" not in st.session_state:
+    st.session_state["pending_retrieval_query"] = None
 
 with st.sidebar:
     st.header("Settings")
@@ -120,6 +135,7 @@ with st.sidebar:
         st.session_state["recent_scope_locked"] = True
         st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
         st.session_state["pending_top_k"] = max(top_k, 12)
+        st.session_state["pending_retrieval_query"] = WEEKLY_SUMMARY_RETRIEVAL_QUERY
     if st.session_state["recent_scope_locked"]:
         st.caption("Recent-only mode is locked for this summary follow-up chat.")
         if st.button("Unlock recent-only mode", use_container_width=True):
@@ -175,6 +191,13 @@ for msg in st.session_state.messages:
 prompt = st.chat_input("Ask a question about computer vision papers...")
 active_prompt = st.session_state.pop("pending_prompt", None) or prompt
 active_top_k = st.session_state.pop("pending_top_k", None) or top_k
+active_retrieval_query = st.session_state.pop("pending_retrieval_query", None)
 if active_prompt:
     recent_days = 7 if recent_only else None
-    run_query(active_prompt, top_k=active_top_k, recent_days=recent_days, model_name=model_name)
+    run_query(
+        active_prompt,
+        top_k=active_top_k,
+        recent_days=recent_days,
+        model_name=model_name,
+        retrieval_query=active_retrieval_query,
+    )

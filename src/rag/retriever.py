@@ -1,10 +1,32 @@
 """Retrieve relevant chunks from ChromaDB given a query."""
 
 import datetime
+
 import chromadb
 
 from src.config import TOP_K
 from src.processing.embedder import get_collection
+
+
+def _parse_result_date(metadata: dict) -> datetime.date | None:
+    """Parse the best available date from chunk metadata."""
+    hf_date = metadata.get("hf_date", "")
+    if hf_date:
+        try:
+            return datetime.date.fromisoformat(hf_date)
+        except ValueError:
+            pass
+
+    published = metadata.get("published", "")
+    if published:
+        try:
+            return datetime.datetime.fromisoformat(
+                published.replace("Z", "+00:00")
+            ).date()
+        except ValueError:
+            pass
+
+    return None
 
 
 def retrieve(query: str, top_k: int = TOP_K,
@@ -16,7 +38,7 @@ def retrieve(query: str, top_k: int = TOP_K,
         query: User query string.
         top_k: Number of results to return.
         collection: Optional ChromaDB collection.
-        recent_days: If provided, filter results to papers indexed in the last N days.
+        recent_days: If provided, filter results to papers published in the last N days.
 
     Returns:
         List of dicts with 'text', 'paper_id', 'title', 'distance' keys.
@@ -26,20 +48,26 @@ def retrieve(query: str, top_k: int = TOP_K,
 
     query_kwargs = {
         "query_texts": [query],
-        "n_results": top_k,
+        "n_results": max(top_k * 5, 50) if recent_days is not None else top_k,
     }
-
-    if recent_days is not None:
-        threshold_date = (datetime.datetime.now() - datetime.timedelta(days=recent_days)).strftime("%Y-%m-%d")
-        query_kwargs["where"] = {"hf_date": {"$gte": threshold_date}}
 
     results = collection.query(**query_kwargs)
 
     retrieved = []
+    threshold_date = None
+    if recent_days is not None:
+        threshold_date = datetime.date.today() - datetime.timedelta(days=recent_days)
+
     if results and results["documents"]:
         for i, doc in enumerate(results["documents"][0]):
             meta = results["metadatas"][0][i] if results["metadatas"] else {}
             distance = results["distances"][0][i] if results["distances"] else None
+
+            if threshold_date is not None:
+                result_date = _parse_result_date(meta)
+                if result_date is None or result_date < threshold_date:
+                    continue
+
             retrieved.append({
                 "text": doc,
                 "paper_id": meta.get("paper_id", ""),
@@ -51,7 +79,7 @@ def retrieve(query: str, top_k: int = TOP_K,
                 "distance": distance,
             })
 
-    return retrieved
+    return retrieved[:top_k]
 
 
 def format_context(results: list[dict]) -> str:

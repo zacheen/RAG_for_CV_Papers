@@ -51,6 +51,7 @@ def run_ingestion(query: str = "", max_papers: int = ARXIV_MAX_RESULTS,
         arxiv_url = meta.get("pdf_url", f"https://arxiv.org/abs/{arxiv_id}").replace("/pdf/", "/abs/")
         authors = ", ".join(meta.get("authors", []))
         published = meta.get("published", "")
+        abstract = meta.get("summary", "")
 
         try:
             parsed = parse_pdf(pdf_path)
@@ -63,6 +64,7 @@ def run_ingestion(query: str = "", max_papers: int = ARXIV_MAX_RESULTS,
             chunks = chunk_document(
                 text, paper_id=paper_id, title=title,
                 arxiv_url=arxiv_url, authors=authors, published=published,
+                abstract=abstract,
             )
             indexed = index_chunks(chunks, collection=collection)
             total_chunks += indexed

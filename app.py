@@ -5,7 +5,7 @@ import streamlit as st
 from src.config import OLLAMA_MODEL, TOP_K
 from src.processing.embedder import get_collection_stats
 from src.rag.generator import generate_answer_stream
-from src.rag.retriever import format_context, retrieve
+from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
 
 WEEKLY_SUMMARY_PROMPT = (
     "Please summarize the newest computer vision papers from the last 7 days. "
@@ -13,11 +13,6 @@ WEEKLY_SUMMARY_PROMPT = (
     "and 4) open questions. Only use the retrieved papers and explicitly mention "
     "when the context is insufficient."
 )
-WEEKLY_SUMMARY_RETRIEVAL_QUERY = (
-    "computer vision paper abstract contributions results"
-)
-
-
 def run_query(
     prompt: str,
     top_k: int,
@@ -106,6 +101,81 @@ def run_query(
         )
 
 
+def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: str) -> None:
+    """Summarize recent papers directly from DB metadata instead of vector search."""
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.write(prompt)
+
+    with st.chat_message("assistant"):
+        try:
+            results = retrieve_recent_papers(recent_days=recent_days, max_papers=top_k)
+        except Exception as e:
+            st.error(f"Recent paper lookup failed: {e}. Make sure you've run the ingestion script.")
+            st.stop()
+
+        if not results:
+            response = (
+                f"I couldn't find any indexed papers published in the last {recent_days} days. "
+                "Re-run ingestion to fetch newer arXiv papers."
+            )
+            st.write(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            return
+
+        context = format_context(results)
+
+        history = []
+        for message in st.session_state.messages[-6:]:
+            if message["role"] in ("user", "assistant") and "sources" not in message:
+                history.append({"role": message["role"], "content": message["content"]})
+
+        try:
+            stream = generate_answer_stream(
+                question=prompt,
+                context=context,
+                model=model_name,
+                chat_history=history,
+            )
+            response = st.write_stream(stream)
+        except Exception as e:
+            response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
+            st.error(response)
+
+        sources = [
+            {
+                "title": result["title"],
+                "arxiv_url": result.get("arxiv_url", ""),
+                "authors": result.get("authors", ""),
+                "passage": result["text"][:300],
+                "distance": result.get("distance", 0.0),
+            }
+            for result in results
+        ]
+        with st.expander("Sources"):
+            for source in sources:
+                url = source.get("arxiv_url", "")
+                if url:
+                    st.markdown(f"**[{source['title']}]({url})**")
+                else:
+                    st.markdown(f"**{source['title']}**")
+                if source.get("authors"):
+                    st.caption(source["authors"])
+                st.markdown(
+                    f"> {source['passage']}"
+                    f"{'...' if len(source['passage']) >= 300 else ''}"
+                )
+                st.divider()
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": response,
+                "sources": sources,
+            }
+        )
+
+
 st.set_page_config(page_title="CV Paper RAG", page_icon="CV", layout="wide")
 
 if "messages" not in st.session_state:
@@ -123,8 +193,8 @@ if "pending_prompt" not in st.session_state:
     st.session_state["pending_prompt"] = None
 if "pending_top_k" not in st.session_state:
     st.session_state["pending_top_k"] = None
-if "pending_retrieval_query" not in st.session_state:
-    st.session_state["pending_retrieval_query"] = None
+if "pending_mode" not in st.session_state:
+    st.session_state["pending_mode"] = "chat"
 
 with st.sidebar:
     st.header("Settings")
@@ -135,7 +205,7 @@ with st.sidebar:
         st.session_state["recent_scope_locked"] = True
         st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
         st.session_state["pending_top_k"] = max(top_k, 12)
-        st.session_state["pending_retrieval_query"] = WEEKLY_SUMMARY_RETRIEVAL_QUERY
+        st.session_state["pending_mode"] = "recent_summary"
     if st.session_state["recent_scope_locked"]:
         st.caption("Recent-only mode is locked for this summary follow-up chat.")
         if st.button("Unlock recent-only mode", use_container_width=True):
@@ -191,13 +261,20 @@ for msg in st.session_state.messages:
 prompt = st.chat_input("Ask a question about computer vision papers...")
 active_prompt = st.session_state.pop("pending_prompt", None) or prompt
 active_top_k = st.session_state.pop("pending_top_k", None) or top_k
-active_retrieval_query = st.session_state.pop("pending_retrieval_query", None)
+active_mode = st.session_state.pop("pending_mode", "chat")
 if active_prompt:
     recent_days = 7 if recent_only else None
-    run_query(
-        active_prompt,
-        top_k=active_top_k,
-        recent_days=recent_days,
-        model_name=model_name,
-        retrieval_query=active_retrieval_query,
-    )
+    if active_mode == "recent_summary":
+        run_recent_summary(
+            active_prompt,
+            top_k=active_top_k,
+            recent_days=7,
+            model_name=model_name,
+        )
+    else:
+        run_query(
+            active_prompt,
+            top_k=active_top_k,
+            recent_days=recent_days,
+            model_name=model_name,
+        )

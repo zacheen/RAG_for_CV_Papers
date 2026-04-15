@@ -54,7 +54,8 @@ def run_today_trend():
                 arxiv_url=paper.get("pdf_url", f"https://arxiv.org/abs/{paper_id}").replace("/pdf/", "/abs/"), 
                 authors=authors, 
                 published=paper.get("published", ""),
-                hf_date=today_str  # Crucial for Recent Filtering!
+                hf_date=today_str,  # Crucial for Recent Filtering!
+                abstract=paper.get("summary", ""),
             )
             
             indexed = index_chunks(chunks, collection=collection)

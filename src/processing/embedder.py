@@ -61,6 +61,7 @@ def index_chunks(chunks: list[dict], collection: chromadb.Collection | None = No
             "authors": c.get("authors", ""),
             "published": c.get("published", ""),
             "hf_date": c.get("hf_date", ""),
+            "abstract": c.get("abstract", ""),
         }
         for c in chunks
     ]

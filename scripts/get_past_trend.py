@@ -14,7 +14,7 @@ from src.processing.chunker import chunk_document
 from src.processing.embedder import get_collection, index_chunks, get_collection_stats
 from src.config import PDF_DIR
 
-def run_past_trend(days_back: int = 365):
+def run_past_trend(days_back: int = 7):
     """Fetch, download, parse and index HF CV papers for the past N days."""
     today = datetime.now()
     collection = get_collection()
@@ -79,4 +79,4 @@ def run_past_trend(days_back: int = 365):
     print(f"  Total chunks in collection: {stats['total_chunks']}")
 
 if __name__ == "__main__":
-    run_past_trend(days_back=365)
+    run_past_trend(days_back=7)

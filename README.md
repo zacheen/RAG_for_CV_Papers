@@ -2,6 +2,10 @@
 
 This project is a Retrieval-Augmented Generation system for computer vision papers. It ingests papers from arXiv, tracks trends from Hugging Face, stores paper content in ChromaDB, and supports both grounded follow-up Q&A and one-click summaries of papers published in the last 7 days.
 
+## Presentation
+
+You can find the project presentation here: [Google Slides](https://docs.google.com/presentation/d/19PZll2_cLFK4NmbU4aPdjUmWjZph7Jwt/edit?slide=id.g3d81aacba0c_0_0#slide=id.g3d81aacba0c_0_0), [PDF](res/RAG_for_CV_Papers.pdf)
+
 ## Project Goal
 
 AI technology is advancing rapidly. Even within computer vision alone, many new papers are published every day. Our goal is to reduce the cost of keeping up with new work by automatically collecting recent papers, summarizing them with a single click, and supporting grounded follow-up questions.

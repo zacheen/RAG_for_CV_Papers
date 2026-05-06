@@ -2,10 +2,18 @@
 
 import streamlit as st
 
-from src.config import OLLAMA_MODEL, TOP_K
+from src.config import GEMINI_MODEL, LLM_BACKEND, OLLAMA_MODEL, TOP_K
 from src.processing.embedder import get_collection_stats
-from src.rag.generator import generate_answer_stream
+from src.rag.generator import generate_answer_stream as ollama_generate_answer_stream
+from src.rag.generator_gemini import generate_answer_stream as gemini_generate_answer_stream
 from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
+
+
+def get_generate_answer_stream(backend: str):
+    """Return the streaming generator function for the chosen backend."""
+    if backend == "gemini":
+        return gemini_generate_answer_stream
+    return ollama_generate_answer_stream
 
 WEEKLY_SUMMARY_PROMPT = (
     "Please summarize the newest computer vision papers from the last 7 days. "
@@ -19,6 +27,7 @@ def run_query(
     recent_days: int | None,
     model_name: str,
     retrieval_query: str | None = None,
+    backend: str = "ollama",
 ) -> None:
     """Execute one RAG query and append the result to session history."""
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -50,6 +59,7 @@ def run_query(
                 history.append({"role": message["role"], "content": message["content"]})
 
         try:
+            generate_answer_stream = get_generate_answer_stream(backend)
             stream = generate_answer_stream(
                 question=prompt,
                 context=context,
@@ -58,7 +68,13 @@ def run_query(
             )
             response = st.write_stream(stream)
         except Exception as e:
-            response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
+            if backend == "gemini":
+                response = (
+                    f"Generation failed: {e}. Is GOOGLE_API_KEY set and is "
+                    f"{model_name} a valid Gemini model?"
+                )
+            else:
+                response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
             st.error(response)
 
         sources = [
@@ -101,7 +117,8 @@ def run_query(
         )
 
 
-def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: str) -> None:
+def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: str,
+                       backend: str = "ollama") -> None:
     """Summarize recent papers directly from DB metadata instead of vector search."""
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -131,6 +148,7 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
                 history.append({"role": message["role"], "content": message["content"]})
 
         try:
+            generate_answer_stream = get_generate_answer_stream(backend)
             stream = generate_answer_stream(
                 question=prompt,
                 context=context,
@@ -139,7 +157,13 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
             )
             response = st.write_stream(stream)
         except Exception as e:
-            response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
+            if backend == "gemini":
+                response = (
+                    f"Generation failed: {e}. Is GOOGLE_API_KEY set and is "
+                    f"{model_name} a valid Gemini model?"
+                )
+            else:
+                response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
             st.error(response)
 
         sources = [
@@ -215,7 +239,22 @@ with st.sidebar:
         key="recent_only",
         disabled=st.session_state["recent_scope_locked"],
     )
-    model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
+    backend_options = ["ollama", "gemini"]
+    default_backend_index = backend_options.index(LLM_BACKEND) if LLM_BACKEND in backend_options else 0
+    backend = st.selectbox(
+        "LLM backend",
+        backend_options,
+        index=default_backend_index,
+        help="ollama = local/VM Ollama (original). gemini = Google AI Studio Gemini free tier.",
+    )
+    if backend == "gemini":
+        model_name = st.text_input("Gemini model", value=GEMINI_MODEL)
+        st.caption(
+            "Set GOOGLE_API_KEY env var. "
+            "Get a free key at https://aistudio.google.com/apikey"
+        )
+    else:
+        model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
 
     st.divider()
     st.header("Collection Stats")
@@ -236,7 +275,10 @@ if your_name:
 else:
     st.title("Computer Vision Paper RAG")
 
-st.caption(f"Powered by {model_name} via Ollama + ChromaDB retrieval")
+if backend == "gemini":
+    st.caption(f"Powered by {model_name} via Google AI Studio + ChromaDB retrieval")
+else:
+    st.caption(f"Powered by {model_name} via Ollama + ChromaDB retrieval")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
@@ -270,6 +312,7 @@ if active_prompt:
             top_k=active_top_k,
             recent_days=7,
             model_name=model_name,
+            backend=backend,
         )
     else:
         run_query(
@@ -277,4 +320,5 @@ if active_prompt:
             top_k=active_top_k,
             recent_days=recent_days,
             model_name=model_name,
+            backend=backend,
         )

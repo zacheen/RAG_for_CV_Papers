@@ -3,6 +3,12 @@
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).parent.parent / ".env")
+except ImportError:
+    pass
+
 # Paths
 PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
@@ -31,6 +37,14 @@ CHROMA_COLLECTION_NAME = "arxiv_cv_papers"
 OLLAMA_MODEL = "llama3.2"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 TOP_K = 5
+
+# Gemini (Google AI Studio) settings — free-tier alternative to Ollama on a VM.
+# Get a free API key at https://aistudio.google.com/apikey and export it as
+# GOOGLE_API_KEY before running.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# LLM backend selector: "ollama" (default, original behavior) or "gemini".
+LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama")
 
 # RAG prompt template
 RAG_SYSTEM_PROMPT = (

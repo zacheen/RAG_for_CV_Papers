@@ -3,3 +3,5 @@ chromadb
 streamlit
 PyMuPDF
 sentence-transformers
+google-genai
+python-dotenv

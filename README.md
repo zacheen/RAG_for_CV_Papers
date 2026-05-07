@@ -117,33 +117,19 @@ Follow these scripts in order:
 
 This is the recommended end-to-end deployment path because the scripts are already organized for sequential execution.
 
-### Local Commands Reference
+### Local Deploy Batches
 
-If you want to run pieces manually instead of using the batch workflow:
+`scripts/local_deploy/` contains PowerShell wrappers for the common local tasks. Activate your Python environment (conda/venv) first, then run each script from the project root.
 
-Install dependencies:
+> **Note:** Local deploy uses the Gemini API as the LLM backend by default (configured via `.env` with `LLM_BACKEND=gemini` and `GOOGLE_API_KEY=...`). Only the GCP deployment uses Ollama + LLaMA 3.2 on the VM. No local Ollama server is required.
 
-```bash
-pip install -r requirements.txt
-```
-
-Index arXiv CV papers:
-
-```bash
-python data/ingest.py --max-papers 800
-```
-
-Index Hugging Face daily CV trends:
-
-```bash
-python data/get_past_trend.py
-```
-
-Run locally:
-
-```bash
-streamlit run app.py
-```
+| Script | Purpose |
+|--------|---------|
+| `scripts/local_deploy/setup.ps1` | First-time setup: `pip install -r requirements.txt` |
+| `scripts/local_deploy/ingest.ps1` | Crawl arXiv cs.CV papers and build the local ChromaDB |
+| `scripts/local_deploy/get-past-trend.ps1` | Backfill past HF Daily CV papers |
+| `scripts/local_deploy/get-today-trend.ps1` | Ingest today's HF Daily CV papers (manual run) |
+| `scripts/local_deploy/run-app.ps1` | Launch the Streamlit app at http://localhost:8501 |
 
 Run with Docker:
 

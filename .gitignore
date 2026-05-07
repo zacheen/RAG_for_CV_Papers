@@ -1,3 +1,5 @@
+.claude*
+
 data/pdfs/
 data/chroma_db/
 __pycache__/

@@ -1,9 +1,24 @@
 """Embed text chunks and store them in ChromaDB."""
 
+import threading
+
 import chromadb
 from chromadb.utils import embedding_functions
 
 from src.config import CHROMA_DIR, CHROMA_COLLECTION_NAME, EMBEDDING_MODEL
+
+
+# Set the first time get_collection() successfully builds the
+# SentenceTransformer-backed collection. UI code reads this to decide whether
+# to show "Loading embedding model..." vs "Retrieving..." in status updates.
+# Process-lifetime; survives Streamlit reruns because module import is cached.
+_embedder_loaded = threading.Event()
+
+
+def is_embedder_loaded() -> bool:
+    """True iff the SentenceTransformer-backed collection has been built at
+    least once in this process (i.e. ``get_collection()`` succeeded)."""
+    return _embedder_loaded.is_set()
 
 
 def get_chroma_client() -> chromadb.ClientAPI:
@@ -32,11 +47,13 @@ def get_collection(client: chromadb.ClientAPI | None = None) -> chromadb.Collect
         model_name=EMBEDDING_MODEL
     )
 
-    return client.get_or_create_collection(
+    collection = client.get_or_create_collection(
         name=CHROMA_COLLECTION_NAME,
         embedding_function=ef,
         metadata={"hnsw:space": "cosine"},
     )
+    _embedder_loaded.set()
+    return collection
 
 
 def get_collection_lite(

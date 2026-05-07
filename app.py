@@ -13,6 +13,7 @@ from src.processing.embedder import (
     get_collection,
     get_collection_lite,
     get_collection_stats,
+    is_embedder_loaded,
 )
 from src.rag import download_state
 from src.rag.download_state import (
@@ -190,64 +191,91 @@ def run_query(
 
     triggered_paths: list[str] = []
 
-    # Stage 1: pre-RAG function-calling pass (Gemini only).
-    if backend == "gemini":
-        _sync_time_range_to_module()
-        log_size_before = len(get_log_snapshot())
-        in_flight_before = download_state._busy_count  # noqa: SLF001
-        run_pre_rag_pass(prompt, model=model_name)
-        _sync_time_range_from_module()
-        if download_state._busy_count > in_flight_before or len(get_log_snapshot()) > log_size_before:  # noqa: SLF001
-            triggered_paths.append("path B / explicit request")
-
-    tr = st.session_state.get("time_range") or {}
-    start_date = _parse_iso(tr.get("start_date"))
-    end_date = _parse_iso(tr.get("end_date"))
-
-    # Prefer the LLM's cleaned query (Stage 1 may have stripped time / download
-    # noise). Fall back to caller-supplied retrieval_query, then raw prompt.
-    effective_retrieval_query = (
-        retrieval_query
-        or retrieval_query_state.cleaned
-        or prompt
-    )
-
     with st.chat_message("assistant"):
-        # Stage 2: retrieve.
-        try:
-            results = retrieve(
-                effective_retrieval_query,
-                top_k=top_k,
-                start_date=start_date,
-                end_date=end_date,
-                collection=get_cached_collection(),
+        with st.status("Processing your question...", expanded=True) as status:
+            # Stage 1: pre-RAG function-calling pass (Gemini only).
+            if backend == "gemini":
+                status.update(label="Detecting query intent (date filters, citation requests)...")
+                _sync_time_range_to_module()
+                log_size_before = len(get_log_snapshot())
+                in_flight_before = download_state._busy_count  # noqa: SLF001
+                run_pre_rag_pass(prompt, model=model_name)
+                _sync_time_range_from_module()
+                if download_state._busy_count > in_flight_before or len(get_log_snapshot()) > log_size_before:  # noqa: SLF001
+                    triggered_paths.append("path B / explicit request")
+                    status.write("Tool call fired: explicit citation download requested")
+
+            tr = st.session_state.get("time_range") or {}
+            start_date = _parse_iso(tr.get("start_date"))
+            end_date = _parse_iso(tr.get("end_date"))
+
+            # Prefer the LLM's cleaned query (Stage 1 may have stripped time /
+            # download noise). Fall back to caller-supplied retrieval_query,
+            # then raw prompt.
+            effective_retrieval_query = (
+                retrieval_query
+                or retrieval_query_state.cleaned
+                or prompt
             )
-        except Exception as e:
-            st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
-            st.stop()
 
-        if not results:
-            response = "I couldn't find any relevant papers. Make sure the corpus has been ingested."
-            st.write(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            return
+            # Stage 2: retrieve. The label depends on whether the embedder is
+            # already warm — first query in a process pays the SentenceTransformer
+            # load (~17s) unless the background warmup beat them to it.
+            if is_embedder_loaded():
+                status.update(label="Retrieving relevant papers...")
+            else:
+                status.update(
+                    label="Loading embedding model (first-time only, ~17s)..."
+                )
+            try:
+                results = retrieve(
+                    effective_retrieval_query,
+                    top_k=top_k,
+                    start_date=start_date,
+                    end_date=end_date,
+                    collection=get_cached_collection(),
+                )
+            except Exception as e:
+                status.update(label=f"Retrieval failed: {e}", state="error", expanded=True)
+                st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
+                st.stop()
 
-        # Stage 2.5: regex auto-trigger (path A) — fire and forget.
-        citation_map = extract_inline_citations(results)
-        for source_paper_id, indices in citation_map.items():
-            outcome = enqueue_citation_download(source_paper_id, indices)
-            if outcome.get("queued", 0) > 0:
-                if "path A / inline citations" not in triggered_paths:
-                    triggered_paths.append("path A / inline citations")
+            if not results:
+                status.update(label="No relevant papers found", state="error", expanded=True)
+                response = "I couldn't find any relevant papers. Make sure the corpus has been ingested."
+                st.write(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                return
 
-        context = format_context(results)
+            status.write(f"Retrieved {len(results)} papers")
 
-        history = []
-        for message in st.session_state.messages[-6:]:
-            if message["role"] in ("user", "assistant") and "sources" not in message:
-                history.append({"role": message["role"], "content": message["content"]})
+            # Stage 2.5: regex auto-trigger (path A) — fire and forget.
+            citation_map = extract_inline_citations(results)
+            for source_paper_id, indices in citation_map.items():
+                outcome = enqueue_citation_download(source_paper_id, indices)
+                if outcome.get("queued", 0) > 0:
+                    if "path A / inline citations" not in triggered_paths:
+                        triggered_paths.append("path A / inline citations")
+                    status.write(
+                        f"Queued background citation download from "
+                        f"`{source_paper_id}` for indices {indices}"
+                    )
 
-        # Stage 3: stream final answer (no tools).
+            context = format_context(results)
+
+            history = []
+            for message in st.session_state.messages[-6:]:
+                if message["role"] in ("user", "assistant") and "sources" not in message:
+                    history.append({"role": message["role"], "content": message["content"]})
+
+            status.update(
+                label=f"Retrieved {len(results)} papers — generating answer below",
+                state="complete",
+                expanded=False,
+            )
+
+        # Stage 3: stream final answer (no tools). Lives outside the status
+        # block so the answer renders as the visible chat message body.
         try:
             generate_answer_stream = get_generate_answer_stream(backend)
             stream = generate_answer_stream(
@@ -329,31 +357,52 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
     _wait_for_downloads()
 
     with st.chat_message("assistant"):
-        try:
-            results = retrieve_recent_papers(
-                recent_days=recent_days,
-                max_papers=top_k,
-                collection=get_cached_collection(),
+        with st.status(
+            f"Looking up papers from the last {recent_days} days...",
+            expanded=True,
+        ) as status:
+            # retrieve_recent_papers does a metadata-only date filter
+            # (collection.get(where=...)) so it can use the lite collection
+            # and skip the SentenceTransformer load entirely.
+            try:
+                results = retrieve_recent_papers(
+                    recent_days=recent_days,
+                    max_papers=top_k,
+                    collection=get_cached_lite_collection(),
+                )
+            except Exception as e:
+                status.update(label=f"Lookup failed: {e}", state="error", expanded=True)
+                st.error(f"Recent paper lookup failed: {e}. Make sure you've run the ingestion script.")
+                st.stop()
+
+            if not results:
+                status.update(
+                    label=f"No indexed papers in the last {recent_days} days",
+                    state="error",
+                    expanded=True,
+                )
+                response = (
+                    f"I couldn't find any indexed papers published in the last {recent_days} days. "
+                    "Re-run ingestion to fetch newer arXiv papers."
+                )
+                st.write(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                return
+
+            status.write(f"Found {len(results)} papers")
+
+            context = format_context(results)
+
+            history = []
+            for message in st.session_state.messages[-6:]:
+                if message["role"] in ("user", "assistant") and "sources" not in message:
+                    history.append({"role": message["role"], "content": message["content"]})
+
+            status.update(
+                label=f"Found {len(results)} papers — generating summary below",
+                state="complete",
+                expanded=False,
             )
-        except Exception as e:
-            st.error(f"Recent paper lookup failed: {e}. Make sure you've run the ingestion script.")
-            st.stop()
-
-        if not results:
-            response = (
-                f"I couldn't find any indexed papers published in the last {recent_days} days. "
-                "Re-run ingestion to fetch newer arXiv papers."
-            )
-            st.write(response)
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            return
-
-        context = format_context(results)
-
-        history = []
-        for message in st.session_state.messages[-6:]:
-            if message["role"] in ("user", "assistant") and "sources" not in message:
-                history.append({"role": message["role"], "content": message["content"]})
 
         try:
             generate_answer_stream = get_generate_answer_stream(backend)

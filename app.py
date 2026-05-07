@@ -369,6 +369,14 @@ with st.sidebar:
         st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
         st.session_state["pending_top_k"] = max(top_k, 12)
         st.session_state["pending_mode"] = "recent_summary"
+        # Reflect the 7-day window in the sidebar's "Current search range"
+        # without going through Gemini — this is a deterministic preset, not
+        # a natural-language request that needs intent extraction.
+        _today = datetime.date.today()
+        st.session_state["time_range"] = {
+            "start_date": (_today - datetime.timedelta(days=7)).isoformat(),
+            "end_date": _today.isoformat(),
+        }
 
     backend_options = ["ollama", "gemini"]
     default_backend_index = backend_options.index(LLM_BACKEND) if LLM_BACKEND in backend_options else 0

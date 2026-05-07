@@ -5,6 +5,17 @@ import sys
 import threading
 import time
 
+# DIAGNOSTIC: timestamp every script run so terminal output shows where
+# wall-clock time goes between `streamlit run` and first paint.
+_T0 = time.perf_counter()
+
+
+def _ts(label: str) -> None:
+    print(f"[+{time.perf_counter() - _T0:6.2f}s] {label}", flush=True)
+
+
+_ts("script start (after stdlib imports)")
+
 import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx
 
@@ -30,6 +41,8 @@ from src.rag.generator_gemini import (
 )
 from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
 from src.rag.tools import retrieval_query_state, time_range_state
+
+_ts("heavy imports done (streamlit, chromadb, google.genai, ollama, project src)")
 
 
 @st.cache_resource
@@ -101,7 +114,10 @@ def _kickoff_embedder_warmup() -> bool:
     return True
 
 
-_kickoff_embedder_warmup()
+# DIAGNOSTIC: temporarily disabled to A/B-test whether the background warmup
+# thread is contending with the main thread on the GIL during first paint.
+# If first paint drops dramatically, warmup is the cause.
+# _kickoff_embedder_warmup()
 
 
 def get_generate_answer_stream(backend: str):
@@ -475,6 +491,8 @@ if "pending_top_k" not in st.session_state:
 if "pending_mode" not in st.session_state:
     st.session_state["pending_mode"] = "chat"
 
+_ts("about to render sidebar")
+
 with st.sidebar:
     st.header("Settings")
     your_name = st.text_input("Your name")
@@ -557,8 +575,15 @@ with st.sidebar:
     st.divider()
     with st.expander("Collection Stats", expanded=False):
         try:
-            stats = get_collection_stats(collection=get_cached_lite_collection())
-            st.metric("Indexed chunks", stats["total_chunks"])
+            _ts("  before get_cached_lite_collection()")
+            _coll = get_cached_lite_collection()
+            _ts("  after get_cached_lite_collection() / before count()")
+            _count = _coll.count()
+            _ts(f"  after count() = {_count}")
+            # Skipping collection.peek(...) — UI never reads `sample` and peek
+            # may trigger HNSW index load (~400MB for 303k chunks) the first
+            # time the persistent collection is touched after a cold OS cache.
+            st.metric("Indexed chunks", _count)
         except Exception:
             st.warning("No indexed data yet. Run the ingestion script first.")
 
@@ -567,6 +592,8 @@ with st.sidebar:
         "RAG system for arXiv CS.CV papers. "
         "Built for CS 6120 NLP Final Project."
     )
+
+_ts("sidebar rendered, about to render main area")
 
 if your_name:
     st.title(f"Hi {your_name} - Ask about CV papers")
@@ -602,6 +629,9 @@ prompt = st.chat_input("Ask a question about computer vision papers...")
 active_prompt = st.session_state.pop("pending_prompt", None) or prompt
 active_top_k = st.session_state.pop("pending_top_k", None) or top_k
 active_mode = st.session_state.pop("pending_mode", "chat")
+
+_ts("main area rendered, script body finished")
+
 if active_prompt:
     if active_mode == "recent_summary":
         run_recent_summary(

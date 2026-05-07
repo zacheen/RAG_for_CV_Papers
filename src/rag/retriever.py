@@ -97,56 +97,66 @@ def retrieve_recent_papers(
         collection = get_collection()
 
     threshold_date = datetime.date.today() - datetime.timedelta(days=recent_days)
+
+    # Push the date filter down to ChromaDB. Chroma's $gte only accepts
+    # numerics, so we enumerate the calendar dates in range and use $in.
+    # We filter on hf_date (YYYY-MM-DD) only — published is a full timestamp
+    # so $in can't match it. Recent papers are ingested via the HF trending
+    # scripts which always set hf_date.
+    today = datetime.date.today()
+    recent_iso_dates = [
+        (today - datetime.timedelta(days=i)).isoformat()
+        for i in range(recent_days + 1)
+    ]
+    rows = collection.get(
+        where={"hf_date": {"$in": recent_iso_dates}},
+        include=["documents", "metadatas"],
+    )
+    documents = rows.get("documents") or []
+    metadatas = rows.get("metadatas") or []
+
     papers: dict[str, dict] = {}
-    batch_size = 500
-    total_rows = collection.count()
+    for doc, meta in zip(documents, metadatas):
+        meta = meta or {}
+        # Re-check in Python: hf_date takes precedence over published, so a
+        # chunk where hf_date is stale but published is recent must still be
+        # treated as stale (matches the prior _parse_result_date semantics).
+        result_date = _parse_result_date(meta)
+        if result_date is None or result_date < threshold_date:
+            continue
 
-    for offset in range(0, total_rows, batch_size):
-        rows = collection.get(
-            include=["documents", "metadatas"],
-            limit=batch_size,
-            offset=offset,
-        )
-        documents = rows.get("documents", [])
-        metadatas = rows.get("metadatas", [])
+        paper_id = meta.get("paper_id", "")
+        if not paper_id:
+            continue
 
-        for doc, meta in zip(documents, metadatas):
-            result_date = _parse_result_date(meta or {})
-            if result_date is None or result_date < threshold_date:
-                continue
+        abstract = (meta.get("abstract") or "").strip()
+        chunk_index = meta.get("chunk_index", 0)
+        text = abstract or (doc.strip() if chunk_index == 0 else "")
+        if not text:
+            continue
 
-            paper_id = meta.get("paper_id", "")
-            if not paper_id:
-                continue
+        existing = papers.get(paper_id)
+        candidate = {
+            "text": text,
+            "paper_id": paper_id,
+            "title": meta.get("title", ""),
+            "arxiv_url": meta.get("arxiv_url", ""),
+            "authors": meta.get("authors", ""),
+            "published": meta.get("published", ""),
+            "abstract": abstract,
+            "chunk_index": chunk_index,
+            "distance": 0.0,
+        }
 
-            abstract = (meta.get("abstract") or "").strip()
-            chunk_index = meta.get("chunk_index", 0)
-            text = abstract or (doc.strip() if chunk_index == 0 else "")
-            if not text:
-                continue
+        if existing is None:
+            papers[paper_id] = candidate
+            continue
 
-            existing = papers.get(paper_id)
-            candidate = {
-                "text": text,
-                "paper_id": paper_id,
-                "title": meta.get("title", ""),
-                "arxiv_url": meta.get("arxiv_url", ""),
-                "authors": meta.get("authors", ""),
-                "published": meta.get("published", ""),
-                "abstract": abstract,
-                "chunk_index": chunk_index,
-                "distance": 0.0,
-            }
-
-            if existing is None:
-                papers[paper_id] = candidate
-                continue
-
-            # Prefer stored abstracts; otherwise keep the earliest chunk.
-            if abstract and not existing.get("abstract"):
-                papers[paper_id] = candidate
-            elif not existing.get("abstract") and chunk_index < existing.get("chunk_index", 999999):
-                papers[paper_id] = candidate
+        # Prefer stored abstracts; otherwise keep the earliest chunk.
+        if abstract and not existing.get("abstract"):
+            papers[paper_id] = candidate
+        elif not existing.get("abstract") and chunk_index < existing.get("chunk_index", 999999):
+            papers[paper_id] = candidate
 
     results = list(papers.values())
     results.sort(

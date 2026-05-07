@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from src.config import PDF_DIR
-from src.processing.embedder import get_collection
+from src.processing.embedder import get_collection_lite
 
 if TYPE_CHECKING:
     import chromadb
@@ -33,28 +33,34 @@ LOG_MAX_ENTRIES = 10
 INLINE_CITATION_PATTERN = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 # Optional DI hook: long-running hosts (the Streamlit app) inject a cached
-# collection factory here so the SentenceTransformer model is built once per
-# process. Scripts/tests don't set this and fall back to a fresh collection.
-_collection_provider: Callable[[], "chromadb.Collection"] | None = None
+# lite-collection factory here so the metadata-only DB checks reuse a single
+# ChromaDB client across reruns and background threads. Scripts/tests don't
+# set this and fall back to building a fresh lite collection on each call.
+#
+# Note: the only collection access in this module is ``_is_in_db`` which does
+# ``collection.get(where=...)`` — purely metadata. We deliberately use the
+# lite (no-embedder) variant here so background dedup checks never trigger
+# the SentenceTransformer load.
+_lite_collection_provider: Callable[[], "chromadb.Collection"] | None = None
 
 
-def set_collection_provider(
+def set_lite_collection_provider(
     provider: Callable[[], "chromadb.Collection"] | None,
 ) -> None:
-    """Install a process-wide ChromaDB collection factory.
+    """Install a process-wide lite (no-embedder) collection factory.
 
-    Pass ``None`` to reset to the default (build a fresh collection on each
-    call). Kept as a module-level injection point so this module stays free
-    of Streamlit-specific imports.
+    Pass ``None`` to reset to the default (build a fresh lite collection on
+    each call). Kept as a module-level injection point so this module stays
+    free of Streamlit-specific imports.
     """
-    global _collection_provider
-    _collection_provider = provider
+    global _lite_collection_provider
+    _lite_collection_provider = provider
 
 
-def _resolve_collection() -> "chromadb.Collection":
-    if _collection_provider is not None:
-        return _collection_provider()
-    return get_collection()
+def _resolve_lite_collection() -> "chromadb.Collection":
+    if _lite_collection_provider is not None:
+        return _lite_collection_provider()
+    return get_collection_lite()
 
 
 @dataclass
@@ -101,7 +107,7 @@ def is_busy() -> bool:
 def _is_in_db(arxiv_id: str) -> bool:
     """Check whether ChromaDB already has at least one chunk for arxiv_id."""
     try:
-        collection = _resolve_collection()
+        collection = _resolve_lite_collection()
         # paper_id in chunk metadata uses the arXiv-id-with-slashes form.
         result = collection.get(where={"paper_id": arxiv_id}, limit=1)
         return bool(result and result.get("ids"))

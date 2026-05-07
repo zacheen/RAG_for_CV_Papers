@@ -6,7 +6,11 @@ import time
 import streamlit as st
 
 from src.config import GEMINI_MODEL, LLM_BACKEND, OLLAMA_MODEL, TOP_K
-from src.processing.embedder import get_collection, get_collection_stats
+from src.processing.embedder import (
+    get_collection,
+    get_collection_lite,
+    get_collection_stats,
+)
 from src.rag import download_state
 from src.rag.download_state import (
     enqueue_citation_download,
@@ -24,18 +28,28 @@ from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
 from src.rag.tools import retrieval_query_state, time_range_state
 
 
+@st.cache_resource
+def get_cached_lite_collection():
+    """Lightweight collection (no SentenceTransformer) for metadata-only ops:
+    sidebar chunk count, citation dedup checks. Cold cost ~0.4s, so cheap
+    enough to live on the first-paint path."""
+    return get_collection_lite()
+
+
 @st.cache_resource(show_spinner="Loading embedding model and ChromaDB...")
 def get_cached_collection():
-    """Build the ChromaDB collection (and SentenceTransformer embedder) once
-    per Streamlit process. Without this, every rerun rebuilds the embedder
-    from disk and stalls the UI for several seconds."""
+    """Full collection with SentenceTransformer embedder. Used by retrieve()
+    and recent-paper lookups. Cold cost ~17s for the first call (loads the
+    embedder from disk), then cached for the rest of the Streamlit process
+    lifetime."""
     return get_collection()
 
 
-# Inject the cached collection into download_state so its background-thread
-# DB checks reuse the same singleton without download_state having to know
-# about Streamlit.
-download_state.set_collection_provider(get_cached_collection)
+# Inject the cached lite collection into download_state so its background
+# citation-dedup checks reuse the same handle without download_state having
+# to import Streamlit. Only the lite collection is needed there because
+# _is_in_db only does metadata lookups.
+download_state.set_lite_collection_provider(get_cached_lite_collection)
 
 
 def get_generate_answer_stream(backend: str):
@@ -441,12 +455,12 @@ with st.sidebar:
         st.caption("Background ingestion in progress...")
 
     st.divider()
-    st.header("Collection Stats")
-    try:
-        stats = get_collection_stats(collection=get_cached_collection())
-        st.metric("Indexed chunks", stats["total_chunks"])
-    except Exception:
-        st.warning("No indexed data yet. Run the ingestion script first.")
+    with st.expander("Collection Stats", expanded=False):
+        try:
+            stats = get_collection_stats(collection=get_cached_lite_collection())
+            st.metric("Indexed chunks", stats["total_chunks"])
+        except Exception:
+            st.warning("No indexed data yet. Run the ingestion script first.")
 
     st.divider()
     st.caption(

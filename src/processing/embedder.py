@@ -14,6 +14,11 @@ def get_chroma_client() -> chromadb.ClientAPI:
 def get_collection(client: chromadb.ClientAPI | None = None) -> chromadb.Collection:
     """Get or create the ChromaDB collection with the configured embedding function.
 
+    Use this for operations that need to embed text on the fly:
+    ``query(query_texts=...)`` and ``upsert(documents=...)``. Building this
+    collection loads SentenceTransformer (~17s cold), so prefer
+    :func:`get_collection_lite` when you only need metadata.
+
     Args:
         client: Optional ChromaDB client. Creates one if not provided.
 
@@ -30,6 +35,33 @@ def get_collection(client: chromadb.ClientAPI | None = None) -> chromadb.Collect
     return client.get_or_create_collection(
         name=CHROMA_COLLECTION_NAME,
         embedding_function=ef,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+def get_collection_lite(
+    client: chromadb.ClientAPI | None = None,
+) -> chromadb.Collection:
+    """Get or create the collection WITHOUT loading any embedding model.
+
+    Use this for metadata-only operations: ``count()``, ``get(where=...)``,
+    ``get(ids=[...])``. Calling ``query(query_texts=...)`` or
+    ``upsert(documents=...)`` on the returned collection will fall back to
+    ChromaDB's default embedder, which is not what we index with — so don't.
+
+    Cold cost ~0.4s vs ~17s for :func:`get_collection`.
+
+    Args:
+        client: Optional ChromaDB client. Creates one if not provided.
+
+    Returns:
+        ChromaDB Collection without a project-specific embedding function.
+    """
+    if client is None:
+        client = get_chroma_client()
+
+    return client.get_or_create_collection(
+        name=CHROMA_COLLECTION_NAME,
         metadata={"hnsw:space": "cosine"},
     )
 
@@ -82,14 +114,19 @@ def index_chunks(chunks: list[dict], collection: chromadb.Collection | None = No
 def get_collection_stats(collection: chromadb.Collection | None = None) -> dict:
     """Get basic stats about the collection.
 
+    Defaults to the lite (no-embedder) collection because count + peek are
+    metadata-only — no need to pay the SentenceTransformer load cost.
+
     Args:
-        collection: Optional ChromaDB collection.
+        collection: Optional ChromaDB collection. Pass an embedder-bound
+            collection only if you already have one in hand; otherwise the
+            lite default is faster.
 
     Returns:
         Dict with 'total_chunks' and 'sample' keys.
     """
     if collection is None:
-        collection = get_collection()
+        collection = get_collection_lite()
 
     count = collection.count()
     sample = collection.peek(limit=3) if count > 0 else {}

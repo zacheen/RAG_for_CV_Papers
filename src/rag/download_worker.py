@@ -61,15 +61,30 @@ def run_citation_download_job(
 
         arxiv_id = entry.get("arxiv_id")
         title = entry.get("title", "") or ""
+        title_search_diag: dict = {}
         if not arxiv_id and title:
             # Semantic Scholar often omits externalIds.ArXiv even for papers
             # that are on arXiv. Fall back to a title-based arXiv search.
-            arxiv_id = search_arxiv_by_title(title)
+            title_search_diag = search_arxiv_by_title(title)
+            arxiv_id = title_search_diag.get("arxiv_id")
         if not arxiv_id:
+            reason_parts = [f"no arXiv id for '{title or '(unknown)'}'"]
+            if title_search_diag:
+                if title_search_diag.get("error"):
+                    reason_parts.append(
+                        f"title search error: {title_search_diag['error']}"
+                    )
+                else:
+                    reason_parts.append(
+                        "title search: best match "
+                        f"'{title_search_diag.get('best_candidate_title', '') or '(no candidates)'}' "
+                        f"score={title_search_diag.get('best_score', 0.0):.2f} "
+                        f"(inspected {title_search_diag.get('candidates_inspected', 0)})"
+                    )
             record_result(
                 arxiv_id=cite_label,
                 status="failed",
-                reason=f"no arXiv id for '{(title or '(unknown)')[:60]}'",
+                reason=" | ".join(reason_parts),
                 source_paper_id=source_paper_id,
                 started_at=started_at,
             )

@@ -20,6 +20,11 @@ SEMANTIC_SCHOLAR_BASE = "https://api.semanticscholar.org/graph/v1/paper"
 REQUEST_TIMEOUT_SECONDS = 30
 _VERSION_SUFFIX = re.compile(r"v\d+$")
 _NORMALISE_RE = re.compile(r"[^a-z0-9 ]+")
+_TITLE_MATCH_THRESHOLD = 0.7
+_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "in", "on", "for", "to",
+    "with", "via", "from", "by", "is", "are", "as", "at",
+}
 
 
 class CitationResolverError(RuntimeError):
@@ -99,61 +104,112 @@ def _normalise_title(title: str) -> str:
     return _NORMALISE_RE.sub(" ", title.lower()).strip()
 
 
-def search_arxiv_by_title(title: str, *, max_candidates: int = 5) -> str | None:
+def _tokenise(text: str) -> set:
+    """Tokenise a normalised title into significant tokens (no stopwords,
+    no length-1 tokens) for set similarity comparison."""
+    normalised = _normalise_title(text)
+    return {
+        tok
+        for tok in normalised.split()
+        if tok and tok not in _STOPWORDS and len(tok) > 1
+    }
+
+
+def _jaccard(a: set, b: set) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def search_arxiv_by_title(title: str, *, max_candidates: int = 8) -> dict:
     """Look up an arXiv paper id by title.
 
     Used as a fallback when Semantic Scholar returns a reference without
     its ``externalIds.ArXiv`` field (common for papers SS hasn't bothered to
     cross-link). The arXiv API supports Lucene-style ``ti:`` queries; we
-    take the top ``max_candidates`` and return the first whose normalised
-    title is a near-match of the input.
+    take the top ``max_candidates`` and pick the candidate with the highest
+    Jaccard similarity over significant tokens (stopwords + 1-char tokens
+    excluded). A match is confident when Jaccard >= ``_TITLE_MATCH_THRESHOLD``.
 
     Args:
         title: The reference title (free text from Semantic Scholar).
         max_candidates: Cap on results to inspect.
 
     Returns:
-        arXiv id string (with slash form preserved, e.g. ``"1312.6114"``)
-        or ``None`` if no confident match was found.
+        Dict with keys:
+        - ``arxiv_id``: str | None — the matching arXiv id, or ``None`` if
+          no candidate cleared the similarity threshold.
+        - ``best_candidate_title``: str — title of the closest arXiv result
+          inspected (empty string if the API returned nothing).
+        - ``best_score``: float — Jaccard similarity to the closest candidate.
+        - ``candidates_inspected``: int — how many arXiv entries we looked at.
+        - ``query``: str — the actual ti: query string we sent.
+        - ``error``: str — populated when the lookup failed (network /
+          parse), empty on success.
     """
+    result = {
+        "arxiv_id": None,
+        "best_candidate_title": "",
+        "best_score": 0.0,
+        "candidates_inspected": 0,
+        "query": "",
+        "error": "",
+    }
+
     clean = (title or "").strip().rstrip(".").strip()
     if len(clean) < 10:
-        return None
+        result["error"] = "title too short"
+        return result
 
+    query_str = f'ti:"{clean}"'
+    result["query"] = query_str
     params = urllib.parse.urlencode(
-        {
-            "search_query": f'ti:"{clean}"',
-            "max_results": max_candidates,
-        }
+        {"search_query": query_str, "max_results": max_candidates}
     )
     url = f"{ARXIV_API_URL}?{params}"
     try:
         with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT_SECONDS) as response:
             data = response.read()
-    except (urllib.error.URLError, urllib.error.HTTPError):
-        return None
+    except (urllib.error.URLError, urllib.error.HTTPError) as exc:
+        result["error"] = f"arXiv API error: {exc}"
+        return result
 
     try:
         root = ET.fromstring(data)
-    except ET.ParseError:
-        return None
+    except ET.ParseError as exc:
+        result["error"] = f"arXiv API parse error: {exc}"
+        return result
 
-    target = _normalise_title(clean)
-    if not target:
-        return None
+    target_tokens = _tokenise(clean)
+    if not target_tokens:
+        result["error"] = "no significant tokens in title"
+        return result
+
+    best_score = 0.0
+    best_id: "str | None" = None
+    best_title = ""
+    inspected = 0
 
     for entry in root.findall("atom:entry", NAMESPACE):
         title_el = entry.find("atom:title", NAMESPACE)
         id_el = entry.find("atom:id", NAMESPACE)
         if title_el is None or id_el is None:
             continue
-        result_title = (title_el.text or "").strip().replace("\n", " ")
-        normalised = _normalise_title(result_title)
-        if not normalised:
-            continue
-        if normalised == target or normalised.startswith(target) or target.startswith(normalised):
-            return id_el.text.strip().split("/abs/")[-1]
-    return None
+        inspected += 1
+        candidate_title = (title_el.text or "").strip().replace("\n", " ")
+        candidate_tokens = _tokenise(candidate_title)
+        score = _jaccard(target_tokens, candidate_tokens)
+        if score > best_score:
+            best_score = score
+            best_title = candidate_title
+            best_id = id_el.text.strip().split("/abs/")[-1]
+
+    result["candidates_inspected"] = inspected
+    result["best_candidate_title"] = best_title
+    result["best_score"] = best_score
+    if best_score >= _TITLE_MATCH_THRESHOLD:
+        result["arxiv_id"] = best_id
+    return result
 
 
 def pick_references(

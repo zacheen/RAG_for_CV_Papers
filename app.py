@@ -6,7 +6,7 @@ import time
 import streamlit as st
 
 from src.config import GEMINI_MODEL, LLM_BACKEND, OLLAMA_MODEL, TOP_K
-from src.processing.embedder import get_collection_stats
+from src.processing.embedder import get_collection, get_collection_stats
 from src.rag import download_state
 from src.rag.download_state import (
     enqueue_citation_download,
@@ -22,6 +22,20 @@ from src.rag.generator_gemini import (
 )
 from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
 from src.rag.tools import retrieval_query_state, time_range_state
+
+
+@st.cache_resource(show_spinner="Loading embedding model and ChromaDB...")
+def get_cached_collection():
+    """Build the ChromaDB collection (and SentenceTransformer embedder) once
+    per Streamlit process. Without this, every rerun rebuilds the embedder
+    from disk and stalls the UI for several seconds."""
+    return get_collection()
+
+
+# Inject the cached collection into download_state so its background-thread
+# DB checks reuse the same singleton without download_state having to know
+# about Streamlit.
+download_state.set_collection_provider(get_cached_collection)
 
 
 def get_generate_answer_stream(backend: str):
@@ -141,6 +155,7 @@ def run_query(
                 top_k=top_k,
                 start_date=start_date,
                 end_date=end_date,
+                collection=get_cached_collection(),
             )
         except Exception as e:
             st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
@@ -250,7 +265,11 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
 
     with st.chat_message("assistant"):
         try:
-            results = retrieve_recent_papers(recent_days=recent_days, max_papers=top_k)
+            results = retrieve_recent_papers(
+                recent_days=recent_days,
+                max_papers=top_k,
+                collection=get_cached_collection(),
+            )
         except Exception as e:
             st.error(f"Recent paper lookup failed: {e}. Make sure you've run the ingestion script.")
             st.stop()
@@ -416,7 +435,7 @@ with st.sidebar:
     st.divider()
     st.header("Collection Stats")
     try:
-        stats = get_collection_stats()
+        stats = get_collection_stats(collection=get_cached_collection())
         st.metric("Indexed chunks", stats["total_chunks"])
     except Exception:
         st.warning("No indexed data yet. Run the ingestion script first.")

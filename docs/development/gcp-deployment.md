@@ -8,7 +8,7 @@ The deployment is split into two phases:
 
 > **Convention:** Each batch is numbered. `[PS]` = run in PowerShell on Windows. `[SSH]` = run in SSH on the VM.
 >
-> Batch scripts are in `scripts/deploy/`. PS batches (0-6) run first, then SSH into VM and run batches 7-8. **No switching back and forth.**
+> Batch scripts are in `scripts/GCP_deploy/`. PS batches (0-6) run first, then SSH into VM and run batches 7-8. **No switching back and forth.**
 
 | Batch | Where | Script | What |
 |-------|-------|--------|------|
@@ -29,7 +29,7 @@ The deployment is split into two phases:
 ### Batch 0 — Install & Ingest [PS]
 
 ```powershell
-.\scripts\deploy\batch0-local-ingest.ps1
+.\scripts\GCP_deploy\batch0-local-ingest.ps1
 ```
 
 Installs dependencies, downloads 800 arXiv CS.CV papers, builds ChromaDB.
@@ -42,7 +42,7 @@ Output: `data/chroma_db/` (~700MB), `total_chunks >= 10000`.
 ### Batch 1 — Create VM [PS]
 
 ```powershell
-.\scripts\deploy\batch1-create-vm.ps1
+.\scripts\GCP_deploy\batch1-create-vm.ps1
 ```
 
 Creates `g2-standard-8` VM with NVIDIA L4 GPU, CUDA 12.8, Ubuntu 22.04.
@@ -52,7 +52,7 @@ Creates `g2-standard-8` VM with NVIDIA L4 GPU, CUDA 12.8, Ubuntu 22.04.
 ### Batch 2 — Upload project to VM [PS]
 
 ```powershell
-.\scripts\deploy\batch2-upload.ps1
+.\scripts\GCP_deploy\batch2-upload.ps1
 ```
 
 Uploads `src/`, `scripts/`, `docs/`, root files, and `data/chroma_db/` to VM. Does NOT upload `data/pdfs/` (not needed on GCP).
@@ -65,7 +65,7 @@ Uploads `src/`, `scripts/`, `docs/`, root files, and `data/chroma_db/` to VM. Do
 ### Batch 3 — Verify upload [PS]
 
 ```powershell
-.\scripts\deploy\batch3-verify-upload.ps1
+.\scripts\GCP_deploy\batch3-verify-upload.ps1
 ```
 
 Checks that `src/`, `scripts/`, and `data/chroma_db/` exist on VM.
@@ -73,7 +73,7 @@ Checks that `src/`, `scripts/`, and `data/chroma_db/` exist on VM.
 ### Batch 4 — Open firewall [PS]
 
 ```powershell
-.\scripts\deploy\batch4-firewall.ps1
+.\scripts\GCP_deploy\batch4-firewall.ps1
 ```
 
 Opens port 8501 for Streamlit access. Only needs to run once.
@@ -81,7 +81,7 @@ Opens port 8501 for Streamlit access. Only needs to run once.
 ### Batch 5 — Get URL [PS]
 
 ```powershell
-.\scripts\deploy\batch5-get-url.ps1
+.\scripts\GCP_deploy\batch5-get-url.ps1
 ```
 
 Prints the app URL. Save it — you'll open it in browser after Batch 8.
@@ -89,7 +89,7 @@ Prints the app URL. Save it — you'll open it in browser after Batch 8.
 ### Batch 6 — SSH into VM [PS]
 
 ```powershell
-.\scripts\deploy\batch6-ssh.ps1
+.\scripts\GCP_deploy\batch6-ssh.ps1
 ```
 
 Connects to the VM. Stay here for Batch 7 and 8.
@@ -97,7 +97,7 @@ Connects to the VM. Stay here for Batch 7 and 8.
 ### Batch 7 — Install Docker + verify GPU [SSH]
 
 ```bash
-bash ~/cv-paper-rag/scripts/deploy/batch7-vm-setup.sh
+bash ~/cv-paper-rag/scripts/GCP_deploy/batch7-vm-setup.sh
 ```
 
 Installs Docker + NVIDIA Container Toolkit. Last line should show NVIDIA L4 inside Docker.
@@ -105,7 +105,7 @@ Installs Docker + NVIDIA Container Toolkit. Last line should show NVIDIA L4 insi
 ### Batch 8 — Build & start Docker [SSH]
 
 ```bash
-bash ~/cv-paper-rag/scripts/deploy/batch8-docker-run.sh
+bash ~/cv-paper-rag/scripts/GCP_deploy/batch8-docker-run.sh
 ```
 
 Builds Docker image, starts container with GPU. Wait for `Starting the Streamlit server`, then open the URL from Batch 5 in your browser.

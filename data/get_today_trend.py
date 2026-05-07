@@ -4,7 +4,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-# Allow running as `python scripts/get_today_trend.py` from project root
+# Allow running as `python data/get_today_trend.py` from project root
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.ingestion.hf_downloader import fetch_daily_cv_papers

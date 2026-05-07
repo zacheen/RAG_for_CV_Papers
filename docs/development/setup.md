@@ -32,13 +32,13 @@ The ingestion script queries the [arXiv API](https://info.arxiv.org/help/api/ind
 
 ```bash
 # Default: download 800 latest cs.CV papers and build vector database
-python scripts/ingest.py --max-papers 800
+python data/ingest.py --max-papers 800
 
 # Filter by topic
-python scripts/ingest.py --query "object detection" --max-papers 800
+python data/ingest.py --query "object detection" --max-papers 800
 
 # Process already-downloaded PDFs only (skip arXiv API + download)
-python scripts/ingest.py --skip-download
+python data/ingest.py --skip-download
 ```
 
 ### Output
@@ -106,8 +106,12 @@ final_project/
   .gitignore
   CLAUDE.md                    # Agent guidance
   project-description.pdf      # Course assignment spec
-  scripts/
+  data/
     ingest.py                  # CLI ingestion pipeline (run locally)
+    get_past_trend.py          # HF Daily Papers backfill
+    get_today_trend.py         # HF Daily Papers daily cron entry point
+    pdfs/                      # (gitignored) Downloaded PDFs
+    chroma_db/                 # (gitignored) ChromaDB vector store
   src/
     config.py                  # Centralized configuration
     ingestion/
@@ -119,7 +123,6 @@ final_project/
     rag/
       retriever.py             # ChromaDB query retrieval
       generator.py             # Ollama/LLaMA answer generation
-  data/                        # (gitignored) Downloaded PDFs + ChromaDB
   docs/                        # Project documentation
 ```
 

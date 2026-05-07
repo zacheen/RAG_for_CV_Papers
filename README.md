@@ -85,34 +85,34 @@ If needed, future work can add formal metrics such as latency, retrieval hit rat
 
 Follow these scripts in order:
 
-1. `scripts/deploy/batch0-local-ingest.ps1`
+1. `scripts/GCP_deploy/batch0-local-ingest.ps1`
    Install local ingestion dependencies, download papers, and build the local ChromaDB.
 
-2. `scripts/deploy/batch1-create-vm.ps1`
+2. `scripts/GCP_deploy/batch1-create-vm.ps1`
    Create the GCP VM.
 
-3. `scripts/deploy/batch2-upload.ps1`
+3. `scripts/GCP_deploy/batch2-upload.ps1`
    Upload project files and the ChromaDB data to the VM.
 
-4. `scripts/deploy/batch3-verify-upload.ps1`
+4. `scripts/GCP_deploy/batch3-verify-upload.ps1`
    Verify that code and database files were uploaded correctly.
 
-5. `scripts/deploy/batch4-firewall.ps1`
+5. `scripts/GCP_deploy/batch4-firewall.ps1`
    Open the Streamlit port.
 
-6. `scripts/deploy/batch5-get-url.ps1`
+6. `scripts/GCP_deploy/batch5-get-url.ps1`
    Get the external URL for the app.
 
-7. `scripts/deploy/batch6-ssh.ps1`
+7. `scripts/GCP_deploy/batch6-ssh.ps1`
    SSH into the VM.
 
-8. `scripts/deploy/batch7-vm-setup.sh`
+8. `scripts/GCP_deploy/batch7-vm-setup.sh`
    Install Docker and the NVIDIA container toolkit on the VM.
 
-9. `scripts/deploy/batch8-docker-run.sh`
+9. `scripts/GCP_deploy/batch8-docker-run.sh`
    Build and run the Docker container.
 
-10. `scripts/deploy/batch9-setup-cron.sh` (optional)
+10. `scripts/GCP_deploy/batch9-setup-cron.sh` (optional)
     Set up daily trend ingestion with cron.
 
 This is the recommended end-to-end deployment path because the scripts are already organized for sequential execution.
@@ -130,13 +130,13 @@ pip install -r requirements.txt
 Index arXiv CV papers:
 
 ```bash
-python scripts/ingest.py --max-papers 800
+python data/ingest.py --max-papers 800
 ```
 
 Index Hugging Face daily CV trends:
 
 ```bash
-python scripts/get_past_trend.py
+python data/get_past_trend.py
 ```
 
 Run locally:
@@ -179,8 +179,8 @@ arXiv API / Hugging Face Daily Papers
 | File | Purpose |
 |------|---------|
 | `app.py` | Streamlit UI with chat, recent-paper summary button, and follow-up flow |
-| `scripts/ingest.py` | arXiv ingestion pipeline |
-| `scripts/get_past_trend.py` | Hugging Face daily paper ingestion pipeline |
+| `data/ingest.py` | arXiv ingestion pipeline |
+| `data/get_past_trend.py` | Hugging Face daily paper ingestion pipeline |
 | `src/config.py` | central configuration and prompts |
 | `src/ingestion/arxiv_downloader.py` | arXiv API search and PDF download |
 | `src/ingestion/hf_downloader.py` | Hugging Face daily paper retrieval |

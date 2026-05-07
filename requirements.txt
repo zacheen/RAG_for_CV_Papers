@@ -2,6 +2,12 @@ ollama
 chromadb
 streamlit
 PyMuPDF
-sentence-transformers
+# Pinned for environments still on torch 2.1.x. Newer transformers (>=4.50)
+# require torch >= 2.4. See docs/LESSONS.md.
+# This project is PyTorch-only — do NOT install tensorflow / keras / tf-keras
+# in the same env, otherwise transformers will try to load its TF integration
+# layer and pull TF in.
+transformers<4.50
+sentence-transformers<5
 google-genai
 python-dotenv

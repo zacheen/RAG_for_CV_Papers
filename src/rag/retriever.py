@@ -31,14 +31,16 @@ def _parse_result_date(metadata: dict) -> datetime.date | None:
 
 def retrieve(query: str, top_k: int = TOP_K,
              collection: chromadb.Collection | None = None,
-             recent_days: int | None = None) -> list[dict]:
+             start_date: datetime.date | None = None,
+             end_date: datetime.date | None = None) -> list[dict]:
     """Retrieve the top-k most relevant chunks for a query.
 
     Args:
         query: User query string.
         top_k: Number of results to return.
         collection: Optional ChromaDB collection.
-        recent_days: If provided, filter results to papers published in the last N days.
+        start_date: If provided, drop results published before this date.
+        end_date: If provided, drop results published after this date.
 
     Returns:
         List of dicts with 'text', 'paper_id', 'title', 'distance' keys.
@@ -46,26 +48,28 @@ def retrieve(query: str, top_k: int = TOP_K,
     if collection is None:
         collection = get_collection()
 
+    has_date_filter = start_date is not None or end_date is not None
     query_kwargs = {
         "query_texts": [query],
-        "n_results": max(top_k * 5, 50) if recent_days is not None else top_k,
+        "n_results": max(top_k * 5, 50) if has_date_filter else top_k,
     }
 
     results = collection.query(**query_kwargs)
 
     retrieved = []
-    threshold_date = None
-    if recent_days is not None:
-        threshold_date = datetime.date.today() - datetime.timedelta(days=recent_days)
 
     if results and results["documents"]:
         for i, doc in enumerate(results["documents"][0]):
             meta = results["metadatas"][0][i] if results["metadatas"] else {}
             distance = results["distances"][0][i] if results["distances"] else None
 
-            if threshold_date is not None:
+            if has_date_filter:
                 result_date = _parse_result_date(meta)
-                if result_date is None or result_date < threshold_date:
+                if result_date is None:
+                    continue
+                if start_date is not None and result_date < start_date:
+                    continue
+                if end_date is not None and result_date > end_date:
                     continue
 
             retrieved.append({

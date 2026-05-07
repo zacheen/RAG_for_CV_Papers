@@ -1,12 +1,26 @@
 """Streamlit RAG chatbot for arXiv computer vision papers."""
 
+import datetime
+import time
+
 import streamlit as st
 
 from src.config import GEMINI_MODEL, LLM_BACKEND, OLLAMA_MODEL, TOP_K
 from src.processing.embedder import get_collection_stats
+from src.rag import download_state
+from src.rag.download_state import (
+    enqueue_citation_download,
+    extract_inline_citations,
+    get_log_snapshot,
+    is_busy,
+)
 from src.rag.generator import generate_answer_stream as ollama_generate_answer_stream
-from src.rag.generator_gemini import generate_answer_stream as gemini_generate_answer_stream
+from src.rag.generator_gemini import (
+    generate_answer_stream as gemini_generate_answer_stream,
+    run_pre_rag_pass,
+)
 from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
+from src.rag.tools import time_range_state
 
 
 def get_generate_answer_stream(backend: str):
@@ -15,16 +29,73 @@ def get_generate_answer_stream(backend: str):
         return gemini_generate_answer_stream
     return ollama_generate_answer_stream
 
+
 WEEKLY_SUMMARY_PROMPT = (
     "Please summarize the newest computer vision papers from the last 7 days. "
     "Group the answer into: 1) key themes, 2) notable papers, 3) why they matter, "
     "and 4) open questions. Only use the retrieved papers and explicitly mention "
     "when the context is insufficient."
 )
+
+
+def _sync_time_range_to_module() -> None:
+    """Push session_state time range into the module-level state used by tools."""
+    tr = st.session_state.get("time_range") or {}
+    time_range_state.start_date = tr.get("start_date")
+    time_range_state.end_date = tr.get("end_date")
+
+
+def _sync_time_range_from_module() -> None:
+    """Pull module-level state back into session_state after the pre-RAG pass."""
+    st.session_state["time_range"] = time_range_state.to_dict()
+
+
+def _wait_for_downloads(max_seconds: float = 60.0) -> None:
+    """Block until all background ingestion jobs finish, with a spinner."""
+    if not is_busy():
+        return
+    deadline = time.monotonic() + max_seconds
+    with st.spinner("Waiting for background paper downloads to finish..."):
+        while is_busy() and time.monotonic() < deadline:
+            time.sleep(0.3)
+
+
+def _parse_iso(value: str | None) -> datetime.date | None:
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _format_time_range_display() -> str:
+    tr = st.session_state.get("time_range") or {}
+    start, end = tr.get("start_date"), tr.get("end_date")
+    if not start and not end:
+        return "All time"
+    if start and end:
+        return f"{start} -> {end}"
+    if start:
+        return f"{start} -> ..."
+    return f"... -> {end}"
+
+
+def _download_attempt_footer(triggered_paths: list[str]) -> str:
+    if not triggered_paths:
+        return ""
+    sources = " and ".join(triggered_paths)
+    return (
+        "\n\n---\n"
+        f"_Attempted background download of cited papers ({sources}). "
+        "If the answer above feels incomplete, the new papers may now be in "
+        "the database — please ask again._"
+    )
+
+
 def run_query(
     prompt: str,
     top_k: int,
-    recent_days: int | None,
     model_name: str,
     retrieval_query: str | None = None,
     backend: str = "ollama",
@@ -34,12 +105,33 @@ def run_query(
     with st.chat_message("user"):
         st.write(prompt)
 
+    # Stage 0: block if a previous download/ingest is still running.
+    _wait_for_downloads()
+
+    triggered_paths: list[str] = []
+
+    # Stage 1: pre-RAG function-calling pass (Gemini only).
+    if backend == "gemini":
+        _sync_time_range_to_module()
+        log_size_before = len(get_log_snapshot())
+        in_flight_before = download_state._busy_count  # noqa: SLF001
+        run_pre_rag_pass(prompt, model=model_name)
+        _sync_time_range_from_module()
+        if download_state._busy_count > in_flight_before or len(get_log_snapshot()) > log_size_before:  # noqa: SLF001
+            triggered_paths.append("path B / explicit request")
+
+    tr = st.session_state.get("time_range") or {}
+    start_date = _parse_iso(tr.get("start_date"))
+    end_date = _parse_iso(tr.get("end_date"))
+
     with st.chat_message("assistant"):
+        # Stage 2: retrieve.
         try:
             results = retrieve(
                 retrieval_query or prompt,
                 top_k=top_k,
-                recent_days=recent_days,
+                start_date=start_date,
+                end_date=end_date,
             )
         except Exception as e:
             st.error(f"Retrieval failed: {e}. Make sure you've run the ingestion script.")
@@ -51,6 +143,14 @@ def run_query(
             st.session_state.messages.append({"role": "assistant", "content": response})
             return
 
+        # Stage 2.5: regex auto-trigger (path A) — fire and forget.
+        citation_map = extract_inline_citations(results)
+        for source_paper_id, indices in citation_map.items():
+            outcome = enqueue_citation_download(source_paper_id, indices)
+            if outcome.get("queued", 0) > 0:
+                if "path A / inline citations" not in triggered_paths:
+                    triggered_paths.append("path A / inline citations")
+
         context = format_context(results)
 
         history = []
@@ -58,6 +158,7 @@ def run_query(
             if message["role"] in ("user", "assistant") and "sources" not in message:
                 history.append({"role": message["role"], "content": message["content"]})
 
+        # Stage 3: stream final answer (no tools).
         try:
             generate_answer_stream = get_generate_answer_stream(backend)
             stream = generate_answer_stream(
@@ -76,6 +177,12 @@ def run_query(
             else:
                 response = f"Generation failed: {e}. Is Ollama running with {model_name}?"
             st.error(response)
+
+        # Stage 4: append download footer when any path triggered.
+        footer = _download_attempt_footer(triggered_paths)
+        if footer:
+            st.markdown(footer)
+            response = (response or "") + footer
 
         sources = [
             {
@@ -123,6 +230,8 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.write(prompt)
+
+    _wait_for_downloads()
 
     with st.chat_message("assistant"):
         try:
@@ -209,10 +318,8 @@ if "messages" not in st.session_state:
             "content": "Ask me anything about computer vision research papers!",
         }
     ]
-if "recent_only" not in st.session_state:
-    st.session_state["recent_only"] = False
-if "recent_scope_locked" not in st.session_state:
-    st.session_state["recent_scope_locked"] = False
+if "time_range" not in st.session_state:
+    st.session_state["time_range"] = {"start_date": None, "end_date": None}
 if "pending_prompt" not in st.session_state:
     st.session_state["pending_prompt"] = None
 if "pending_top_k" not in st.session_state:
@@ -225,20 +332,10 @@ with st.sidebar:
     your_name = st.text_input("Your name")
     top_k = st.slider("Number of retrieved chunks", 1, 20, TOP_K)
     if st.button("Summarize new papers from last 7 days", use_container_width=True):
-        st.session_state["recent_only"] = True
-        st.session_state["recent_scope_locked"] = True
         st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
         st.session_state["pending_top_k"] = max(top_k, 12)
         st.session_state["pending_mode"] = "recent_summary"
-    if st.session_state["recent_scope_locked"]:
-        st.caption("Recent-only mode is locked for this summary follow-up chat.")
-        if st.button("Unlock recent-only mode", use_container_width=True):
-            st.session_state["recent_scope_locked"] = False
-    recent_only = st.checkbox(
-        "Only search recent 7 days CV recommendations",
-        key="recent_only",
-        disabled=st.session_state["recent_scope_locked"],
-    )
+
     backend_options = ["ollama", "gemini"]
     default_backend_index = backend_options.index(LLM_BACKEND) if LLM_BACKEND in backend_options else 0
     backend = st.selectbox(
@@ -255,6 +352,35 @@ with st.sidebar:
         )
     else:
         model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
+
+    st.divider()
+    st.header("Current search range")
+    st.write(_format_time_range_display())
+    st.caption(
+        "Set automatically when you mention dates in chat (Gemini backend). "
+        "Say \"ignore the time filter\" to clear."
+    )
+
+    st.divider()
+    st.header("Download log")
+    log_entries = list(reversed(get_log_snapshot()))
+    if not log_entries:
+        st.caption("No background downloads yet.")
+    else:
+        for entry in log_entries:
+            icon = {
+                "ok": "[OK]",
+                "failed": "[FAIL]",
+                "skipped": "[SKIP]",
+                "running": "[...]",
+                "pending": "[...]",
+            }.get(entry.status, "[?]")
+            line = f"{icon} `{entry.arxiv_id}`"
+            if entry.reason:
+                line += f" — {entry.reason}"
+            st.markdown(line)
+    if is_busy():
+        st.caption("Background ingestion in progress...")
 
     st.divider()
     st.header("Collection Stats")
@@ -305,7 +431,6 @@ active_prompt = st.session_state.pop("pending_prompt", None) or prompt
 active_top_k = st.session_state.pop("pending_top_k", None) or top_k
 active_mode = st.session_state.pop("pending_mode", "chat")
 if active_prompt:
-    recent_days = 7 if recent_only else None
     if active_mode == "recent_summary":
         run_recent_summary(
             active_prompt,
@@ -318,7 +443,6 @@ if active_prompt:
         run_query(
             active_prompt,
             top_k=active_top_k,
-            recent_days=recent_days,
             model_name=model_name,
             backend=backend,
         )

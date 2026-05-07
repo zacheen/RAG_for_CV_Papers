@@ -11,6 +11,7 @@ from src.ingestion.citation_resolver import (
     CitationResolverError,
     pick_references,
     resolve_references,
+    search_arxiv_by_title,
 )
 from src.ingestion.ingest_single import ingest_paper
 from src.rag.download_state import (
@@ -59,12 +60,16 @@ def run_citation_download_job(
             continue
 
         arxiv_id = entry.get("arxiv_id")
+        title = entry.get("title", "") or ""
+        if not arxiv_id and title:
+            # Semantic Scholar often omits externalIds.ArXiv even for papers
+            # that are on arXiv. Fall back to a title-based arXiv search.
+            arxiv_id = search_arxiv_by_title(title)
         if not arxiv_id:
-            title = entry.get("title", "") or "(unknown)"
             record_result(
                 arxiv_id=cite_label,
                 status="failed",
-                reason=f"no arXiv id for '{title[:60]}'",
+                reason=f"no arXiv id for '{(title or '(unknown)')[:60]}'",
                 source_paper_id=source_paper_id,
                 started_at=started_at,
             )

@@ -7,12 +7,17 @@ their signatures and docstrings to decide when to invoke them.
 State is held at module level so the tools stay pure-Python (no Streamlit
 imports). ``app.py`` syncs ``st.session_state["time_range"]`` to and from the
 :data:`time_range_state` object across each chat turn.
+
+NOTE: deliberately NO ``from __future__ import annotations`` here. Gemini's
+AFC uses ``inspect.signature`` to build the function schema, and PEP 563
+deferred annotations turn the type hints into raw strings that the SDK
+fails to introspect — silently disabling auto-execution of the tool.
 """
 
-from __future__ import annotations
-
 import datetime
+import sys
 from dataclasses import dataclass
+from typing import List
 
 from src.rag.download_state import enqueue_citation_download
 
@@ -21,8 +26,8 @@ from src.rag.download_state import enqueue_citation_download
 class TimeRangeState:
     """Module-level mirror of the active publication-date filter."""
 
-    start_date: str | None = None
-    end_date: str | None = None
+    start_date: "str | None" = None
+    end_date: "str | None" = None
 
     def clear(self) -> None:
         self.start_date = None
@@ -32,11 +37,16 @@ class TimeRangeState:
         self.start_date = start_date
         self.end_date = end_date
 
-    def to_dict(self) -> dict[str, str | None]:
+    def to_dict(self) -> dict:
         return {"start_date": self.start_date, "end_date": self.end_date}
 
 
 time_range_state = TimeRangeState()
+
+# Debug visibility: every tool invocation appends a one-line summary here.
+# Cleared by run_pre_rag_pass at the start of each turn. The sidebar reads
+# this to show what the LLM actually called (or didn't call).
+last_call_log: list[str] = []
 
 
 def _validate_iso_date(value: str, field_name: str) -> datetime.date:
@@ -65,6 +75,8 @@ def set_time_range(start_date: str, end_date: str) -> str:
     Returns:
         Human-readable confirmation string.
     """
+    print(f"[TOOL] set_time_range({start_date!r}, {end_date!r})", file=sys.stderr, flush=True)
+    last_call_log.append(f"set_time_range({start_date!r}, {end_date!r})")
     try:
         start = _validate_iso_date(start_date, "start_date")
         end = _validate_iso_date(end_date, "end_date")
@@ -91,12 +103,14 @@ def clear_time_range() -> str:
     Returns:
         Confirmation string.
     """
+    print("[TOOL] clear_time_range()", file=sys.stderr, flush=True)
+    last_call_log.append("clear_time_range()")
     time_range_state.clear()
     return "Time range cleared. Searching all indexed papers."
 
 
 def download_cited_papers(
-    source_paper_id: str, citation_indices: list[int]
+    source_paper_id: str, citation_indices: List[int]
 ) -> str:
     """Download papers cited by a specific source paper.
 
@@ -118,6 +132,14 @@ def download_cited_papers(
         Status string. Actual download and ingestion happen asynchronously;
         the user can monitor progress in the sidebar download log.
     """
+    print(
+        f"[TOOL] download_cited_papers({source_paper_id!r}, {list(citation_indices)!r})",
+        file=sys.stderr,
+        flush=True,
+    )
+    last_call_log.append(
+        f"download_cited_papers({source_paper_id!r}, {list(citation_indices)!r})"
+    )
     if not source_paper_id or not citation_indices:
         return "Error: source_paper_id and citation_indices are both required."
 

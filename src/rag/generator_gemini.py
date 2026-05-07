@@ -15,7 +15,12 @@ from google import genai
 from google.genai import types
 
 from src.config import GEMINI_MODEL, RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE
+from src.rag import tools as rag_tools
 from src.rag.tools import get_tools, time_range_state
+
+# Debug visibility for the pre-RAG pass. The sidebar reads this to surface
+# why a tool may not have fired (model error, network failure, AFC issue).
+last_pre_rag_error: str | None = None
 
 
 PRE_RAG_SYSTEM_PROMPT = (
@@ -142,13 +147,17 @@ def run_pre_rag_pass(prompt: str, model: str = GEMINI_MODEL) -> None:
         prompt: The user's latest chat message.
         model: Gemini model name.
     """
+    global last_pre_rag_error
+    last_pre_rag_error = None
+    rag_tools.last_call_log.clear()
+
     if not prompt or not prompt.strip():
         return
 
     try:
         client = _get_client()
-    except RuntimeError:
-        # No API key — caller already shows a friendly message in the main path.
+    except RuntimeError as exc:
+        last_pre_rag_error = f"client init failed: {exc}"
         return
 
     today = datetime.date.today().isoformat()
@@ -163,7 +172,7 @@ def run_pre_rag_pass(prompt: str, model: str = GEMINI_MODEL) -> None:
     )
 
     try:
-        client.models.generate_content(
+        response = client.models.generate_content(
             model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -171,6 +180,21 @@ def run_pre_rag_pass(prompt: str, model: str = GEMINI_MODEL) -> None:
                 tools=get_tools(),
             ),
         )
-    except Exception:
-        # AFC / network errors should not break the main RAG turn.
+        # If AFC ran, the SDK exposes the conversation; surface any function
+        # calls the model proposed (helps debug "tool wasn't called" issues).
+        try:
+            history = getattr(response, "automatic_function_calling_history", None) or []
+            for content in history:
+                for part in getattr(content, "parts", []) or []:
+                    fc = getattr(part, "function_call", None)
+                    if fc and fc.name:
+                        rag_tools.last_call_log.append(
+                            f"[afc-history] {fc.name}({dict(fc.args or {})})"
+                        )
+        except Exception as inner:
+            rag_tools.last_call_log.append(f"[afc-history-inspect-failed] {inner}")
+    except Exception as exc:
+        # AFC / network errors should not break the main RAG turn — but DO
+        # surface them so the user can see why nothing fired.
+        last_pre_rag_error = f"{type(exc).__name__}: {exc}"
         return

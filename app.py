@@ -15,6 +15,7 @@ from src.rag.download_state import (
     is_busy,
 )
 from src.rag.generator import generate_answer_stream as ollama_generate_answer_stream
+from src.rag import generator_gemini, tools as rag_tools
 from src.rag.generator_gemini import (
     generate_answer_stream as gemini_generate_answer_stream,
     run_pre_rag_pass,
@@ -223,6 +224,12 @@ def run_query(
             }
         )
 
+    # Force a rerun so the sidebar (Current search range, Pre-RAG debug,
+    # Download log) reflects state changed by this turn — Streamlit only
+    # re-renders the sidebar on a fresh script execution and the sidebar
+    # block runs BEFORE run_query in the script flow.
+    st.rerun()
+
 
 def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: str,
                        backend: str = "ollama") -> None:
@@ -360,6 +367,19 @@ with st.sidebar:
         "Set automatically when you mention dates in chat (Gemini backend). "
         "Say \"ignore the time filter\" to clear."
     )
+
+    st.divider()
+    st.header("Pre-RAG debug")
+    if generator_gemini.last_pre_rag_error:
+        st.error(generator_gemini.last_pre_rag_error)
+    if rag_tools.last_call_log:
+        st.caption("Last turn function calls:")
+        for line in rag_tools.last_call_log:
+            st.code(line, language="text")
+    elif backend == "gemini" and not generator_gemini.last_pre_rag_error:
+        st.caption("No tool calls fired in the last turn.")
+    else:
+        st.caption("(Gemini backend only)")
 
     st.divider()
     st.header("Download log")

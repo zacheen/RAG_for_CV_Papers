@@ -41,7 +41,7 @@ TOP_K = 5
 # Gemini (Google AI Studio) settings — free-tier alternative to Ollama on a VM.
 # Get a free API key at https://aistudio.google.com/apikey and export it as
 # GOOGLE_API_KEY before running.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
 # LLM backend selector: "ollama" (default, original behavior) or "gemini".
 LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama")

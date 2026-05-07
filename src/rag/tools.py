@@ -43,6 +43,24 @@ class TimeRangeState:
 
 time_range_state = TimeRangeState()
 
+
+@dataclass
+class RetrievalQueryState:
+    """Per-turn cleaned query for vector retrieval. Cleared at the start of
+    every pre-RAG pass; never persisted across turns (each user message gets
+    a fresh chance to be rewritten)."""
+
+    cleaned: "str | None" = None
+
+    def clear(self) -> None:
+        self.cleaned = None
+
+    def set(self, cleaned: str) -> None:
+        self.cleaned = cleaned
+
+
+retrieval_query_state = RetrievalQueryState()
+
 # Debug visibility: every tool invocation appends a one-line summary here.
 # Cleared by run_pre_rag_pass at the start of each turn. The sidebar reads
 # this to show what the LLM actually called (or didn't call).
@@ -163,6 +181,53 @@ def download_cited_papers(
     )
 
 
+def rewrite_retrieval_query(cleaned_query: str) -> str:
+    """Provide a cleaner version of the user's prompt to use as the
+    semantic-search query for paper retrieval.
+
+    Call this whenever the user's prompt contains material that doesn't help
+    vector retrieval — e.g. time-range phrases ("last week", "in 2025",
+    "this year"), download requests ("download the references of..."),
+    pleasantries, instructions to the chatbot. Strip those and keep ONLY the
+    topical keywords describing what the user wants to learn about.
+
+    Examples:
+      User: "I want the diffusion application within this year"
+        -> cleaned_query = "diffusion model applications"
+      User: "what's new with vision transformers since 2024?"
+        -> cleaned_query = "vision transformers"
+      User: "download papers cited by ViT and explain self-attention"
+        -> cleaned_query = "self-attention in vision transformers"
+
+    Skip this tool only when the user's prompt is already clean topical
+    keywords with no noise to strip.
+
+    Args:
+        cleaned_query: Concise topical query (5-20 words) suitable for
+            sentence-embedding similarity search. Do NOT include dates,
+            download instructions, or conversational phrasing.
+
+    Returns:
+        Confirmation string.
+    """
+    print(
+        f"[TOOL] rewrite_retrieval_query({cleaned_query!r})",
+        file=sys.stderr,
+        flush=True,
+    )
+    last_call_log.append(f"rewrite_retrieval_query({cleaned_query!r})")
+    cleaned = (cleaned_query or "").strip()
+    if not cleaned:
+        return "Error: cleaned_query cannot be empty."
+    retrieval_query_state.set(cleaned)
+    return f"Retrieval query set to: {cleaned}"
+
+
 def get_tools() -> list:
     """Return the list of tool callables to register with Gemini AFC."""
-    return [set_time_range, clear_time_range, download_cited_papers]
+    return [
+        set_time_range,
+        clear_time_range,
+        download_cited_papers,
+        rewrite_retrieval_query,
+    ]

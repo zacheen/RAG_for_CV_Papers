@@ -82,21 +82,28 @@ user prompt
   ▼
 [Stage 1]  PRE-RAG function-calling pass (non-streaming)
            Gemini call with tools=[set_time_range, clear_time_range,
-                                   download_cited_papers]
+                                   download_cited_papers,
+                                   rewrite_retrieval_query]
            contents=(user prompt + brief instruction: "extract intent —
-           date filter? explicit citation download request? — and call
-           the appropriate tools. Otherwise do nothing.")
+           date filter? explicit citation download request? noisy phrasing
+           that needs cleaning for retrieval? — and call the appropriate
+           tools. Otherwise do nothing.")
               ├── may call set_time_range / clear_time_range
               │     → mutate st.session_state["time_range"]
-              └── may call download_cited_papers (path B, explicit only)
-                    → enqueue via shared dedup gates
-                    → fires background thread
+              ├── may call download_cited_papers (path B, explicit only)
+              │     → enqueue via shared dedup gates
+              │     → fires background thread
+              └── may call rewrite_retrieval_query
+                    → store cleaned query in retrieval_query_state
+                      (per-turn module state, cleared at start of next
+                       Stage 1)
               Tool return values are discarded — Stage 1's text output is
               not shown to the user.
   │
   ▼
-[Stage 2]  retrieve(prompt, time_range)        ← app code, always runs,
-                                                  uses the just-updated range
+[Stage 2]  retrieve(query, time_range)
+              query = retrieval_query_state.cleaned if set, else raw prompt
+           App code, always runs, uses the just-updated range.
   │
   ▼
 [Stage 2.5] regex auto-trigger (path A, no LLM)
@@ -105,9 +112,11 @@ user prompt
   │
   ▼
 [Stage 3]  Generation pass (streaming, NO tools)
-           Gemini call with contents=(prompt + retrieved context),
+           Gemini call with contents=(raw prompt + retrieved context),
            system_instruction=RAG_SYSTEM_PROMPT
               └── streams final answer text to UI
+           Note: uses the raw prompt, not the cleaned one — the user's
+           phrasing carries intent that the answer should respect.
   │
   ▼
 [Stage 4]  If any download was queued (path A or B), append
@@ -341,7 +350,9 @@ Decided: download log updates **on next prompt only**. No live polling.
 
 ## Resolved decisions
 
-- All three tools live in a single **pre-RAG** function-calling pass
+- All four tools (`set_time_range`, `clear_time_range`,
+  `download_cited_papers`, `rewrite_retrieval_query`) live in a single
+  **pre-RAG** function-calling pass
   (Stage 1). Retrieve always runs as plain app code in Stage 2. Stage 3
   is streaming generation with no tools.
 - Sidebar download log updates on next prompt only (no live polling).

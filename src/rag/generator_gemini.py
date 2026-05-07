@@ -16,7 +16,7 @@ from google.genai import types
 
 from src.config import GEMINI_MODEL, RAG_SYSTEM_PROMPT, RAG_USER_TEMPLATE
 from src.rag import tools as rag_tools
-from src.rag.tools import get_tools, time_range_state
+from src.rag.tools import get_tools, retrieval_query_state, time_range_state
 
 # Debug visibility for the pre-RAG pass. The sidebar reads this to surface
 # why a tool may not have fired (model error, network failure, AFC issue).
@@ -25,13 +25,19 @@ last_pre_rag_error: str | None = None
 
 PRE_RAG_SYSTEM_PROMPT = (
     "You are an intent extractor for a computer-vision paper RAG chatbot. "
-    "Inspect the user's latest message and call the provided tools when appropriate:\n"
+    "Inspect the user's latest message and call the provided tools as appropriate. "
+    "You may call MULTIPLE tools in one turn; do so when the prompt covers "
+    "more than one concern (e.g. mentions a date AND has noise to strip).\n"
     "- set_time_range: when the user wants to filter papers by publication date.\n"
     "- clear_time_range: when the user wants to remove an existing date filter.\n"
     "- download_cited_papers: ONLY when the user explicitly asks to download "
     "the references of a specific paper by arXiv id. Do NOT call this for "
     "general questions about papers; the application handles inline citation "
     "downloads automatically.\n"
+    "- rewrite_retrieval_query: whenever the user's prompt has time phrases, "
+    "download instructions, or conversational filler that would dilute a "
+    "vector-similarity search. Pass back ONLY the topical keywords. Skip "
+    "this tool when the prompt is already clean topical text.\n"
     "If no tool applies, do nothing and return a short acknowledgement. "
     "Today's date is {today}. Convert relative phrases (\"last week\", "
     "\"March 2025\", \"since 2024\") to absolute ISO dates using today as the "
@@ -150,6 +156,8 @@ def run_pre_rag_pass(prompt: str, model: str = GEMINI_MODEL) -> None:
     global last_pre_rag_error
     last_pre_rag_error = None
     rag_tools.last_call_log.clear()
+    # Cleaned query is per-turn — never carries over.
+    retrieval_query_state.clear()
 
     if not prompt or not prompt.strip():
         return

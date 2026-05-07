@@ -21,7 +21,7 @@ from src.rag.generator_gemini import (
     run_pre_rag_pass,
 )
 from src.rag.retriever import format_context, retrieve, retrieve_recent_papers
-from src.rag.tools import time_range_state
+from src.rag.tools import retrieval_query_state, time_range_state
 
 
 def get_generate_answer_stream(backend: str):
@@ -125,11 +125,19 @@ def run_query(
     start_date = _parse_iso(tr.get("start_date"))
     end_date = _parse_iso(tr.get("end_date"))
 
+    # Prefer the LLM's cleaned query (Stage 1 may have stripped time / download
+    # noise). Fall back to caller-supplied retrieval_query, then raw prompt.
+    effective_retrieval_query = (
+        retrieval_query
+        or retrieval_query_state.cleaned
+        or prompt
+    )
+
     with st.chat_message("assistant"):
         # Stage 2: retrieve.
         try:
             results = retrieve(
-                retrieval_query or prompt,
+                effective_retrieval_query,
                 top_k=top_k,
                 start_date=start_date,
                 end_date=end_date,
@@ -372,6 +380,9 @@ with st.sidebar:
     st.header("Pre-RAG debug")
     if generator_gemini.last_pre_rag_error:
         st.error(generator_gemini.last_pre_rag_error)
+    if retrieval_query_state.cleaned:
+        st.caption("Cleaned retrieval query:")
+        st.code(retrieval_query_state.cleaned, language="text")
     if rag_tools.last_call_log:
         st.caption("Last turn function calls:")
         for line in rag_tools.last_call_log:

@@ -1,9 +1,12 @@
 """Streamlit RAG chatbot for arXiv computer vision papers."""
 
 import datetime
+import sys
+import threading
 import time
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.config import GEMINI_MODEL, LLM_BACKEND, OLLAMA_MODEL, TOP_K
 from src.processing.embedder import (
@@ -36,12 +39,19 @@ def get_cached_lite_collection():
     return get_collection_lite()
 
 
-@st.cache_resource(show_spinner="Loading embedding model and ChromaDB...")
+@st.cache_resource(show_spinner=False)
 def get_cached_collection():
     """Full collection with SentenceTransformer embedder. Used by retrieve()
     and recent-paper lookups. Cold cost ~17s for the first call (loads the
     embedder from disk), then cached for the rest of the Streamlit process
-    lifetime."""
+    lifetime.
+
+    ``show_spinner`` is disabled because this function is normally called
+    from the background warmup thread at module load — surfacing a spinner
+    there would render at the top of the page (where the warmup kickoff
+    lives in script flow) and overlap the title. Streamlit's built-in
+    top-right "Running..." indicator still fires if the user submits a
+    prompt while warmup is still in flight."""
     return get_collection()
 
 
@@ -50,6 +60,47 @@ def get_cached_collection():
 # to import Streamlit. Only the lite collection is needed there because
 # _is_in_db only does metadata lookups.
 download_state.set_lite_collection_provider(get_cached_lite_collection)
+
+
+@st.cache_resource
+def _kickoff_embedder_warmup() -> bool:
+    """Pre-warm the heavy embedder cache in a daemon thread on first run.
+
+    The user is going to retrieve() eventually, which needs the
+    SentenceTransformer model (~17s cold load). Loading it in a background
+    thread while the user reads the page / types their first prompt usually
+    means by the time they submit, ``get_cached_collection()`` is already
+    cache-warm and the answer streams immediately.
+
+    Streamlit's ``@st.cache_resource`` is thread-safe: if the user submits
+    before the warmup finishes, their main-thread ``get_cached_collection()``
+    call blocks on the same internal lock and reuses the in-progress result
+    — no double computation.
+
+    Wrapped in ``@st.cache_resource`` itself so the kicker runs exactly once
+    per Streamlit process (script reruns hit the cached return and skip the
+    spawn). Returns a sentinel so Streamlit can cache it.
+    """
+    def _warmup() -> None:
+        try:
+            get_cached_collection()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[embedder-warmup] failed: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    thread = threading.Thread(target=_warmup, daemon=True, name="embedder-warmup")
+    # Attach the current Streamlit ScriptRunContext to the worker so it can
+    # safely interact with @st.cache_resource without the "missing
+    # ScriptRunContext" warning that Streamlit otherwise logs to stderr.
+    add_script_run_ctx(thread)
+    thread.start()
+    return True
+
+
+_kickoff_embedder_warmup()
 
 
 def get_generate_answer_stream(backend: str):

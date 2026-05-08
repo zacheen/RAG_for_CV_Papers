@@ -76,6 +76,47 @@ def get_cached_collection():
 download_state.set_lite_collection_provider(get_cached_lite_collection)
 
 
+@st.cache_resource(show_spinner=False)
+def get_cached_chunk_count() -> int:
+    """Memoize the indexed-chunk count for this Streamlit process.
+
+    The underlying ``get_chunk_count_fast()`` runs ``SELECT MAX(rowid)``
+    on ChromaDB's SQLite — sub-second even on cold OS cache, but we still
+    cache it so reruns don't re-issue the query. Pre-warmed by
+    :func:`_kickoff_count_warmup` so even the first sidebar render hits a
+    warm cache.
+    """
+    return get_chunk_count_fast()
+
+
+@st.cache_resource
+def _kickoff_count_warmup() -> bool:
+    """Pre-fill the chunk-count cache in a daemon thread before the
+    sidebar renders, so the count is off the first-paint critical path.
+
+    With ``MAX(rowid)`` this is sub-second so the speedup is small in
+    absolute terms — but moving it off the main thread keeps the sidebar
+    paint independent of any future SQL/disk regressions.
+    """
+    def _warmup() -> None:
+        try:
+            get_cached_chunk_count()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[chunk-count-warmup] failed: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    thread = threading.Thread(target=_warmup, daemon=True, name="chunk-count-warmup")
+    add_script_run_ctx(thread)
+    thread.start()
+    return True
+
+
+_kickoff_count_warmup()
+
+
 @st.cache_resource
 def _kickoff_embedder_warmup() -> bool:
     """Pre-warm the heavy embedder cache in a daemon thread on first run.
@@ -114,10 +155,7 @@ def _kickoff_embedder_warmup() -> bool:
     return True
 
 
-# DIAGNOSTIC: temporarily disabled to A/B-test whether the background warmup
-# thread is contending with the main thread on the GIL during first paint.
-# If first paint drops dramatically, warmup is the cause.
-# _kickoff_embedder_warmup()
+_kickoff_embedder_warmup()
 
 
 def get_generate_answer_stream(backend: str):
@@ -575,9 +613,9 @@ with st.sidebar:
     st.divider()
     with st.expander("Collection Stats", expanded=False):
         try:
-            _ts("  before get_chunk_count_fast()")
-            _count = get_chunk_count_fast()
-            _ts(f"  after get_chunk_count_fast() = {_count}")
+            _ts("  before get_cached_chunk_count()")
+            _count = get_cached_chunk_count()
+            _ts(f"  after get_cached_chunk_count() = {_count}")
             st.metric("Indexed chunks", _count)
         except Exception:
             st.warning("No indexed data yet. Run the ingestion script first.")

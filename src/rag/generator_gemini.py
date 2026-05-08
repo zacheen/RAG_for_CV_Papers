@@ -90,7 +90,7 @@ def generate_answer(question: str, context: str,
     Args:
         question: User question.
         context: Formatted context string from retrieved chunks.
-        model: Gemini model name (e.g. "gemini-1.5-flash").
+        model: Gemini model name (e.g. "gemini-3.1-flash-lite").
         chat_history: Optional prior conversation messages.
 
     Returns:

@@ -7,6 +7,8 @@ down Streamlit startup).
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from src.ingestion.citation_resolver import (
     CitationResolverError,
     pick_references,
@@ -21,6 +23,15 @@ from src.rag.download_state import (
     record_result,
     release_arxiv,
 )
+
+# Per-citation work is mostly network I/O (Semantic Scholar resolve + arXiv
+# title search + PDF download) with a short CPU-bound parse + chunk tail and
+# a serialized embed/index step. Three workers gives a clear wall-time win on
+# typical 5–20 citation batches without hammering arXiv's "1 req / 3 s"
+# guideline. Bumping this further yields diminishing returns and risks rate
+# limiting; the embed/index step is locked in :mod:`src.processing.embedder`
+# anyway.
+_MAX_PARALLEL_CITATIONS = 3
 
 
 def run_citation_download_job(
@@ -49,178 +60,224 @@ def run_citation_download_job(
         return
 
     picked = pick_references(references, citation_indices)
-    for idx, entry in picked:
-        cite_label = f"{source_paper_id}#[{idx}]"
 
-        # Flip the pre-populated pending row to running so the user sees
-        # progress on the active citation. record_result upserts by
-        # cite_label, so this updates in place.
-        record_result(
-            arxiv_id=cite_label,
-            status="running",
-            reason="resolving",
-            source_paper_id=source_paper_id,
-            started_at=started_at,
-            cite_label=cite_label,
-        )
-
-        if entry is None:
-            record_result(
-                arxiv_id=cite_label,
-                status="failed",
-                reason=f"index {idx} out of range",
+    # Run per-citation work in a small thread pool so network-bound steps
+    # (resolve + PDF download + parse) overlap. The embed/index step is
+    # serialized inside index_chunks() via a module-level lock, so concurrent
+    # workers are safe even though they share a SentenceTransformer + Chroma.
+    with ThreadPoolExecutor(
+        max_workers=_MAX_PARALLEL_CITATIONS,
+        thread_name_prefix="cite-dl",
+    ) as pool:
+        futures = [
+            pool.submit(
+                _process_one_citation,
                 source_paper_id=source_paper_id,
                 started_at=started_at,
-                cite_label=cite_label,
+                idx=idx,
+                entry=entry,
             )
-            continue
-
-        arxiv_id = entry.get("arxiv_id")
-        title = entry.get("title", "") or ""
-        title_search_diag: dict = {}
-        if not arxiv_id and title:
-            # Semantic Scholar often omits externalIds.ArXiv even for papers
-            # that are on arXiv. Fall back to a title-based arXiv search.
-            title_search_diag = search_arxiv_by_title(title)
-            arxiv_id = title_search_diag.get("arxiv_id")
-        if not arxiv_id:
-            # OA fallback: SS often supplies an open-access PDF URL even when
-            # the paper isn't on arXiv. Try that before giving up so journal
-            # / bioRxiv / publisher-OA references still get indexed.
-            pdf_url = entry.get("pdf_url")
-            ss_id = entry.get("paper_id_ss")
-            if pdf_url and ss_id:
-                synthetic_id = f"ss_{ss_id}"
-                should, reason = gate_check(synthetic_id)
-                if not should:
-                    record_result(
-                        arxiv_id=synthetic_id,
-                        status="skipped",
-                        reason=reason,
-                        source_paper_id=source_paper_id,
-                        started_at=started_at,
-                        cite_label=cite_label,
-                    )
-                    continue
-                if not mark_arxiv_in_flight(synthetic_id):
-                    record_result(
-                        arxiv_id=synthetic_id,
-                        status="skipped",
-                        reason="already in flight",
-                        source_paper_id=source_paper_id,
-                        started_at=started_at,
-                        cite_label=cite_label,
-                    )
-                    continue
+            for idx, entry in picked
+        ]
+        # Wait for all workers; exceptions surface via .result() and are
+        # logged as a failed entry so the sidebar reflects the crash.
+        for future, (idx, _entry) in zip(futures, picked):
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001
+                cite_label = f"{source_paper_id}#[{idx}]"
                 record_result(
-                    arxiv_id=synthetic_id,
-                    status="running",
-                    reason="downloading via OA fallback",
+                    arxiv_id=cite_label,
+                    status="failed",
+                    reason=f"worker crashed: {exc!r}",
                     source_paper_id=source_paper_id,
                     started_at=started_at,
                     cite_label=cite_label,
                 )
-                try:
-                    oa_result = ingest_pdf_from_url(
-                        pdf_url, paper_id=synthetic_id, title=title
-                    )
-                finally:
-                    release_arxiv(synthetic_id)
-                if oa_result["status"] == "ok":
-                    record_result(
-                        arxiv_id=synthetic_id,
-                        status="ok",
-                        reason=f"indexed {oa_result['chunks_indexed']} chunks (OA fallback)",
-                        source_paper_id=source_paper_id,
-                        started_at=started_at,
-                        cite_label=cite_label,
-                    )
-                else:
-                    record_result(
-                        arxiv_id=synthetic_id,
-                        status="failed",
-                        reason=f"OA fallback: {oa_result.get('reason', 'unknown')}",
-                        source_paper_id=source_paper_id,
-                        started_at=started_at,
-                        cite_label=cite_label,
-                    )
-                continue
 
-            reason_parts = [f"no arXiv id for '{title or '(unknown)'}'"]
-            if title_search_diag:
-                if title_search_diag.get("error"):
-                    reason_parts.append(
-                        f"title search error: {title_search_diag['error']}"
-                    )
-                else:
-                    reason_parts.append(
-                        "title search: best match "
-                        f"'{title_search_diag.get('best_candidate_title', '') or '(no candidates)'}' "
-                        f"score={title_search_diag.get('best_score', 0.0):.2f} "
-                        f"(inspected {title_search_diag.get('candidates_inspected', 0)})"
-                    )
-            record_result(
-                arxiv_id=cite_label,
-                status="failed",
-                reason=" | ".join(reason_parts),
-                source_paper_id=source_paper_id,
-                started_at=started_at,
-                cite_label=cite_label,
-            )
-            continue
 
-        # Re-run dedup gates right before doing real work.
-        should, reason = gate_check(arxiv_id)
-        if not should:
-            record_result(
-                arxiv_id=arxiv_id,
-                status="skipped",
-                reason=reason,
-                source_paper_id=source_paper_id,
-                started_at=started_at,
-                cite_label=cite_label,
-            )
-            continue
+def _process_one_citation(
+    *,
+    source_paper_id: str,
+    started_at: str,
+    idx: int,
+    entry: dict | None,
+) -> None:
+    """Resolve and ingest a single citation. Designed to run inside a
+    ThreadPoolExecutor — all shared state (in-flight set, log) is protected
+    by locks in :mod:`src.rag.download_state` and :mod:`src.processing.embedder`.
+    """
+    cite_label = f"{source_paper_id}#[{idx}]"
 
-        if not mark_arxiv_in_flight(arxiv_id):
-            record_result(
-                arxiv_id=arxiv_id,
-                status="skipped",
-                reason="already in flight",
-                source_paper_id=source_paper_id,
-                started_at=started_at,
-                cite_label=cite_label,
-            )
-            continue
+    # Flip the pre-populated pending row to running so the user sees
+    # progress on the active citation. record_result upserts by
+    # cite_label, so this updates in place.
+    record_result(
+        arxiv_id=cite_label,
+        status="running",
+        reason="resolving",
+        source_paper_id=source_paper_id,
+        started_at=started_at,
+        cite_label=cite_label,
+    )
 
+    if entry is None:
         record_result(
-            arxiv_id=arxiv_id,
-            status="running",
-            reason="downloading from arXiv",
+            arxiv_id=cite_label,
+            status="failed",
+            reason=f"index {idx} out of range",
             source_paper_id=source_paper_id,
             started_at=started_at,
             cite_label=cite_label,
         )
-        try:
-            result = ingest_paper(arxiv_id)
-        finally:
-            release_arxiv(arxiv_id)
+        return
 
-        if result["status"] == "ok":
+    arxiv_id = entry.get("arxiv_id")
+    title = entry.get("title", "") or ""
+    title_search_diag: dict = {}
+    if not arxiv_id and title:
+        # Semantic Scholar often omits externalIds.ArXiv even for papers
+        # that are on arXiv. Fall back to a title-based arXiv search.
+        title_search_diag = search_arxiv_by_title(title)
+        arxiv_id = title_search_diag.get("arxiv_id")
+    if not arxiv_id:
+        # OA fallback: SS often supplies an open-access PDF URL even when
+        # the paper isn't on arXiv. Try that before giving up so journal
+        # / bioRxiv / publisher-OA references still get indexed.
+        pdf_url = entry.get("pdf_url")
+        ss_id = entry.get("paper_id_ss")
+        if pdf_url and ss_id:
+            synthetic_id = f"ss_{ss_id}"
+            should, reason = gate_check(synthetic_id)
+            if not should:
+                record_result(
+                    arxiv_id=synthetic_id,
+                    status="skipped",
+                    reason=reason,
+                    source_paper_id=source_paper_id,
+                    started_at=started_at,
+                    cite_label=cite_label,
+                )
+                return
+            if not mark_arxiv_in_flight(synthetic_id):
+                record_result(
+                    arxiv_id=synthetic_id,
+                    status="skipped",
+                    reason="already in flight",
+                    source_paper_id=source_paper_id,
+                    started_at=started_at,
+                    cite_label=cite_label,
+                )
+                return
             record_result(
-                arxiv_id=arxiv_id,
-                status="ok",
-                reason=f"indexed {result['chunks_indexed']} chunks",
+                arxiv_id=synthetic_id,
+                status="running",
+                reason="downloading via OA fallback",
                 source_paper_id=source_paper_id,
                 started_at=started_at,
                 cite_label=cite_label,
             )
-        else:
-            record_result(
-                arxiv_id=arxiv_id,
-                status="failed",
-                reason=result.get("reason", "unknown"),
-                source_paper_id=source_paper_id,
-                started_at=started_at,
-                cite_label=cite_label,
-            )
+            try:
+                oa_result = ingest_pdf_from_url(
+                    pdf_url, paper_id=synthetic_id, title=title
+                )
+            finally:
+                release_arxiv(synthetic_id)
+            if oa_result["status"] == "ok":
+                record_result(
+                    arxiv_id=synthetic_id,
+                    status="ok",
+                    reason=f"indexed {oa_result['chunks_indexed']} chunks (OA fallback)",
+                    source_paper_id=source_paper_id,
+                    started_at=started_at,
+                    cite_label=cite_label,
+                )
+            else:
+                record_result(
+                    arxiv_id=synthetic_id,
+                    status="failed",
+                    reason=f"OA fallback: {oa_result.get('reason', 'unknown')}",
+                    source_paper_id=source_paper_id,
+                    started_at=started_at,
+                    cite_label=cite_label,
+                )
+            return
+
+        reason_parts = [f"no arXiv id for '{title or '(unknown)'}'"]
+        if title_search_diag:
+            if title_search_diag.get("error"):
+                reason_parts.append(
+                    f"title search error: {title_search_diag['error']}"
+                )
+            else:
+                reason_parts.append(
+                    "title search: best match "
+                    f"'{title_search_diag.get('best_candidate_title', '') or '(no candidates)'}' "
+                    f"score={title_search_diag.get('best_score', 0.0):.2f} "
+                    f"(inspected {title_search_diag.get('candidates_inspected', 0)})"
+                )
+        record_result(
+            arxiv_id=cite_label,
+            status="failed",
+            reason=" | ".join(reason_parts),
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )
+        return
+
+    # Re-run dedup gates right before doing real work.
+    should, reason = gate_check(arxiv_id)
+    if not should:
+        record_result(
+            arxiv_id=arxiv_id,
+            status="skipped",
+            reason=reason,
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )
+        return
+
+    if not mark_arxiv_in_flight(arxiv_id):
+        record_result(
+            arxiv_id=arxiv_id,
+            status="skipped",
+            reason="already in flight",
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )
+        return
+
+    record_result(
+        arxiv_id=arxiv_id,
+        status="running",
+        reason="downloading from arXiv",
+        source_paper_id=source_paper_id,
+        started_at=started_at,
+        cite_label=cite_label,
+    )
+    try:
+        result = ingest_paper(arxiv_id)
+    finally:
+        release_arxiv(arxiv_id)
+
+    if result["status"] == "ok":
+        record_result(
+            arxiv_id=arxiv_id,
+            status="ok",
+            reason=f"indexed {result['chunks_indexed']} chunks",
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )
+    else:
+        record_result(
+            arxiv_id=arxiv_id,
+            status="failed",
+            reason=result.get("reason", "unknown"),
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )

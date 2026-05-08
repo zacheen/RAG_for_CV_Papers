@@ -15,6 +15,14 @@ from src.config import CHROMA_DIR, CHROMA_COLLECTION_NAME, EMBEDDING_MODEL
 # Process-lifetime; survives Streamlit reruns because module import is cached.
 _embedder_loaded = threading.Event()
 
+# Serializes concurrent index_chunks() calls. The download-worker thread pool
+# parallelizes per-citation network/parse work, but the embed + ChromaDB
+# upsert step shares a single SentenceTransformer + SQLite-backed Chroma
+# instance, neither of which we want to hammer concurrently. Lock acquisition
+# is microseconds for single-threaded callers (existing batch scripts), so
+# this is a no-op for them.
+_index_lock = threading.Lock()
+
 
 def is_embedder_loaded() -> bool:
     """True iff the SentenceTransformer-backed collection has been built at
@@ -94,37 +102,38 @@ def index_chunks(chunks: list[dict], collection: chromadb.Collection | None = No
     Returns:
         Number of chunks indexed.
     """
-    if collection is None:
-        collection = get_collection()
-
     if not chunks:
         return 0
 
-    ids = [f"{c['paper_id']}_chunk_{c['chunk_index']}" for c in chunks]
-    documents = [c["text"] for c in chunks]
-    metadatas = [
-        {
-            "paper_id": c["paper_id"],
-            "title": c["title"],
-            "chunk_index": c["chunk_index"],
-            "arxiv_url": c.get("arxiv_url", ""),
-            "authors": c.get("authors", ""),
-            "published": c.get("published", ""),
-            "hf_date": c.get("hf_date", ""),
-            "abstract": c.get("abstract", ""),
-        }
-        for c in chunks
-    ]
+    with _index_lock:
+        if collection is None:
+            collection = get_collection()
 
-    # ChromaDB upsert handles duplicates gracefully
-    batch_size = 100
-    for start in range(0, len(ids), batch_size):
-        end = start + batch_size
-        collection.upsert(
-            ids=ids[start:end],
-            documents=documents[start:end],
-            metadatas=metadatas[start:end],
-        )
+        ids = [f"{c['paper_id']}_chunk_{c['chunk_index']}" for c in chunks]
+        documents = [c["text"] for c in chunks]
+        metadatas = [
+            {
+                "paper_id": c["paper_id"],
+                "title": c["title"],
+                "chunk_index": c["chunk_index"],
+                "arxiv_url": c.get("arxiv_url", ""),
+                "authors": c.get("authors", ""),
+                "published": c.get("published", ""),
+                "hf_date": c.get("hf_date", ""),
+                "abstract": c.get("abstract", ""),
+            }
+            for c in chunks
+        ]
+
+        # ChromaDB upsert handles duplicates gracefully
+        batch_size = 100
+        for start in range(0, len(ids), batch_size):
+            end = start + batch_size
+            collection.upsert(
+                ids=ids[start:end],
+                documents=documents[start:end],
+                metadatas=metadatas[start:end],
+            )
 
     return len(ids)
 

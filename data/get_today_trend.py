@@ -11,7 +11,7 @@ from src.ingestion.hf_downloader import fetch_daily_cv_papers
 from src.ingestion.arxiv_downloader import download_pdf
 from src.ingestion.pdf_parser import parse_pdf
 from src.processing.chunker import chunk_document
-from src.processing.embedder import get_collection, index_chunks, get_collection_stats
+from src.processing.embedder import get_collection, index_chunks, get_chunk_count_fast
 from src.config import PDF_DIR
 
 def run_today_trend():
@@ -66,10 +66,9 @@ def run_today_trend():
             print(f"  Error processing {paper_id}: {e}")
             continue
 
-    stats = get_collection_stats(collection)
     print("\nDaily Ingestion Complete!")
     print(f"  New chunks indexed today: {total_chunks}")
-    print(f"  Total chunks in collection: {stats['total_chunks']}")
+    print(f"  Total chunks in collection: {get_chunk_count_fast()}")
 
 if __name__ == "__main__":
     run_today_trend()

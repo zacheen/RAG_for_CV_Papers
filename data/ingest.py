@@ -11,7 +11,7 @@ from src.config import ARXIV_MAX_RESULTS, PDF_DIR
 from src.ingestion.arxiv_downloader import search_arxiv, download_papers
 from src.ingestion.pdf_parser import parse_pdf
 from src.processing.chunker import chunk_document
-from src.processing.embedder import get_collection, index_chunks, get_collection_stats
+from src.processing.embedder import get_collection, index_chunks, get_chunk_count_fast
 
 
 def run_ingestion(query: str = "", max_papers: int = ARXIV_MAX_RESULTS,
@@ -77,11 +77,10 @@ def run_ingestion(query: str = "", max_papers: int = ARXIV_MAX_RESULTS,
             continue
 
     # Step 3: Report
-    stats = get_collection_stats(collection)
     print(f"\nIngestion complete!")
     print(f"  Papers processed: {len(pdf_paths)}")
     print(f"  New chunks indexed: {total_chunks}")
-    print(f"  Total chunks in collection: {stats['total_chunks']}")
+    print(f"  Total chunks in collection: {get_chunk_count_fast()}")
 
 
 def main():

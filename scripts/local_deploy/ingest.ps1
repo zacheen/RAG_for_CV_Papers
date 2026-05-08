@@ -2,4 +2,4 @@
 # Activate your conda/venv environment first, then run from project root.
 
 python data/ingest.py --max-papers 800 # --query TOPIC
-python -c "from src.processing.embedder import get_collection_stats; print(get_collection_stats())"
+python -c "from src.processing.embedder import get_chunk_count_fast; print('total_chunks:', get_chunk_count_fast())"

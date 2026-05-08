@@ -21,9 +21,9 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 from src.config import GEMINI_MODEL, LLM_BACKEND, OLLAMA_MODEL, TOP_K
 from src.processing.embedder import (
+    get_chunk_count_fast,
     get_collection,
     get_collection_lite,
-    get_collection_stats,
     is_embedder_loaded,
 )
 from src.rag import download_state
@@ -575,14 +575,9 @@ with st.sidebar:
     st.divider()
     with st.expander("Collection Stats", expanded=False):
         try:
-            _ts("  before get_cached_lite_collection()")
-            _coll = get_cached_lite_collection()
-            _ts("  after get_cached_lite_collection() / before count()")
-            _count = _coll.count()
-            _ts(f"  after count() = {_count}")
-            # Skipping collection.peek(...) — UI never reads `sample` and peek
-            # may trigger HNSW index load (~400MB for 303k chunks) the first
-            # time the persistent collection is touched after a cold OS cache.
+            _ts("  before get_chunk_count_fast()")
+            _count = get_chunk_count_fast()
+            _ts(f"  after get_chunk_count_fast() = {_count}")
             st.metric("Indexed chunks", _count)
         except Exception:
             st.warning("No indexed data yet. Run the ingestion script first.")

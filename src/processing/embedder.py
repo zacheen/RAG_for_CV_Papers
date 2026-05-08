@@ -1,5 +1,6 @@
 """Embed text chunks and store them in ChromaDB."""
 
+import sqlite3
 import threading
 
 import chromadb
@@ -128,23 +129,35 @@ def index_chunks(chunks: list[dict], collection: chromadb.Collection | None = No
     return len(ids)
 
 
-def get_collection_stats(collection: chromadb.Collection | None = None) -> dict:
-    """Get basic stats about the collection.
+def get_chunk_count_fast() -> int:
+    """Return the indexed-chunk count by querying ChromaDB's underlying
+    SQLite directly, bypassing ChromaDB's collection layer.
 
-    Defaults to the lite (no-embedder) collection because count + peek are
-    metadata-only — no need to pay the SentenceTransformer load cost.
+    Uses ``MAX(rowid)`` instead of ``COUNT(*)`` because:
 
-    Args:
-        collection: Optional ChromaDB collection. Pass an embedder-bound
-            collection only if you already have one in hand; otherwise the
-            lite default is faster.
+    - ``COUNT(*)`` walks the full ``embeddings`` b-tree — O(N) page reads.
+      Measured at ~62s cold for 303k rows on a 2.3GB DB after reboot.
+    - ``MAX(rowid)`` follows the rightmost path of the b-tree — O(log N).
+      Should be sub-second even on cold OS cache.
 
-    Returns:
-        Dict with 'total_chunks' and 'sample' keys.
+    Correctness assumes:
+      1. rowids are sequential starting at 1 (default SQLite INSERT
+         behavior — ChromaDB doesn't override this).
+      2. No row has ever been deleted from the ``embeddings`` table.
+
+    Both hold in this project today: ingestion only ever appends new
+    chunks. If chunk removal is added later, switch to a cached-on-disk
+    counter file written during ingestion (e.g. ``data/chroma_db/
+    chunk_count.txt``) to keep first-paint fast.
+
+    Returns 0 if the database file doesn't exist yet (before first ingest).
     """
-    if collection is None:
-        collection = get_collection_lite()
-
-    count = collection.count()
-    sample = collection.peek(limit=3) if count > 0 else {}
-    return {"total_chunks": count, "sample": sample}
+    db_path = CHROMA_DIR / "chroma.sqlite3"
+    if not db_path.exists():
+        return 0
+    # Read-only mode keeps us safe from any writer (the Streamlit app may
+    # have ChromaDB clients open in parallel).
+    uri = f"file:{db_path.as_posix()}?mode=ro"
+    with sqlite3.connect(uri, uri=True) as conn:
+        row = conn.execute("SELECT MAX(rowid) FROM embeddings").fetchone()
+        return row[0] or 0

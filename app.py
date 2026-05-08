@@ -32,6 +32,7 @@ from src.rag.download_state import (
     extract_inline_citations,
     get_log_snapshot,
     is_busy,
+    take_log_change_signal,
 )
 from src.rag.generator import generate_answer_stream as ollama_generate_answer_stream
 from src.rag import generator_gemini, tools as rag_tools
@@ -591,24 +592,52 @@ with st.sidebar:
 
     st.divider()
     st.header("Download log")
-    log_entries = list(reversed(get_log_snapshot()))
-    if not log_entries:
-        st.caption("No background downloads yet.")
-    else:
-        for entry in log_entries:
-            icon = {
-                "ok": "[OK]",
-                "failed": "[FAIL]",
-                "skipped": "[SKIP]",
-                "running": "[...]",
-                "pending": "[...]",
-            }.get(entry.status, "[?]")
-            line = f"{icon} `{entry.arxiv_id}`"
-            if entry.reason:
-                line += f" — {entry.reason}"
-            st.markdown(line)
-    if is_busy():
-        st.caption("Background ingestion in progress...")
+
+    # Capture busy state at script-render time. The fragment below uses
+    # this to decide whether to enable polling. Once polling reaches a
+    # busy → idle transition it forces a full script rerun so the next
+    # fragment instantiation drops ``run_every`` and stops ticking.
+    _busy_at_render = is_busy()
+
+    @st.fragment(run_every="2s" if _busy_at_render else None)
+    def _download_log_fragment() -> None:
+        # Consume the worker→main-thread dirty flag. The flag itself is
+        # mostly informational here because Streamlit's WebSocket layer
+        # diffs the rendered DOM and only sends actual changes — but
+        # clearing it documents the signal handoff and prevents the flag
+        # from accumulating "stale set" state across reruns.
+        take_log_change_signal()
+
+        log_entries = list(reversed(get_log_snapshot()))
+        if not log_entries:
+            st.caption("No background downloads yet.")
+        else:
+            for entry in log_entries:
+                icon = {
+                    "ok": "[OK]",
+                    "failed": "[FAIL]",
+                    "skipped": "[SKIP]",
+                    "running": "[...]",
+                    "pending": "[...]",
+                }.get(entry.status, "[?]")
+                line = f"{icon} `{entry.arxiv_id}`"
+                if entry.reason:
+                    line += f" — {entry.reason}"
+                st.markdown(line)
+
+        currently_busy = is_busy()
+        if currently_busy:
+            st.caption("Background ingestion in progress...")
+        elif _busy_at_render:
+            # Transition: fragment was polling, now idle. Full-script
+            # rerun re-evaluates ``_busy_at_render`` so the next fragment
+            # instance has ``run_every=None`` and stops ticking.
+            # Brief sleep gives any race-finishing workers time to flush
+            # their last log entry before we settle.
+            time.sleep(0.3)
+            st.rerun()
+
+    _download_log_fragment()
 
     st.divider()
     with st.expander("Collection Stats", expanded=False):

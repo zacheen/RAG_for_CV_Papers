@@ -78,6 +78,13 @@ _log: deque[DownloadJobEntry] = deque(maxlen=LOG_MAX_ENTRIES)
 _in_flight: set[str] = set()  # arxiv_ids currently pending or running
 _busy_count: int = 0  # number of background workers currently running
 
+# Worker → main-thread signal. Workers set this whenever the log changes;
+# the Streamlit UI polls/consumes it to decide when to re-render the
+# Download log section. Independent of ``_busy_count`` so log edits that
+# don't change busy-ness (e.g. status flipping ``running → ok``) still
+# notify.
+_log_changed: threading.Event = threading.Event()
+
 
 def _now_iso() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
@@ -90,6 +97,22 @@ def _safe_id(arxiv_id: str) -> str:
 def _push_log(entry: DownloadJobEntry) -> None:
     with _lock:
         _log.append(entry)
+    # Notify any UI poller that the log has new content.
+    _log_changed.set()
+
+
+def take_log_change_signal() -> bool:
+    """Test-and-clear the log-changed flag atomically.
+
+    Returns True if a worker pushed a new log entry since the last call.
+    Use this as the reactive gate from the Streamlit UI: combine with a
+    short-interval poll (e.g. ``st.fragment(run_every="2s")``) so the
+    sidebar re-renders only when something actually changed.
+    """
+    if _log_changed.is_set():
+        _log_changed.clear()
+        return True
+    return False
 
 
 def get_log_snapshot() -> list[DownloadJobEntry]:
@@ -184,6 +207,17 @@ def enqueue_citation_download(
     def _run() -> None:
         try:
             worker(source_paper_id, citation_indices)
+        except Exception as exc:  # noqa: BLE001
+            # Safety net: any unhandled exception inside the worker still
+            # surfaces in the Download log (and trips ``_log_changed``) so
+            # the UI's polling fragment notices the failure instead of
+            # leaving stale ``running`` entries forever.
+            record_result(
+                arxiv_id=f"{source_paper_id}#error",
+                status="failed",
+                reason=f"worker crashed: {exc!r}",
+                source_paper_id=source_paper_id,
+            )
         finally:
             with _lock:
                 _in_flight.discard(job_key)

@@ -4,8 +4,9 @@ import datetime
 
 import chromadb
 
-from src.config import TOP_K
+from src.config import RERANKER_INITIAL_K, TOP_K
 from src.processing.embedder import get_collection
+from src.processing.reranker import rerank
 
 
 def _parse_result_date(metadata: dict) -> datetime.date | None:
@@ -32,7 +33,8 @@ def _parse_result_date(metadata: dict) -> datetime.date | None:
 def retrieve(query: str, top_k: int = TOP_K,
              collection: chromadb.Collection | None = None,
              start_date: datetime.date | None = None,
-             end_date: datetime.date | None = None) -> list[dict]:
+             end_date: datetime.date | None = None,
+             use_reranker: bool = False) -> list[dict]:
     """Retrieve the top-k most relevant chunks for a query.
 
     Args:
@@ -41,6 +43,8 @@ def retrieve(query: str, top_k: int = TOP_K,
         collection: Optional ChromaDB collection.
         start_date: If provided, drop results published before this date.
         end_date: If provided, drop results published after this date.
+        use_reranker: If True, fetch a larger candidate pool and rerank
+            with a cross-encoder before truncating to top_k.
 
     Returns:
         List of dicts with 'text', 'paper_id', 'title', 'distance' keys.
@@ -49,9 +53,19 @@ def retrieve(query: str, top_k: int = TOP_K,
         collection = get_collection()
 
     has_date_filter = start_date is not None or end_date is not None
+
+    # Candidate pool sizing:
+    # - reranker needs more than top_k to actually do work
+    # - date filter needs over-fetching to survive post-filtering
+    initial_k = top_k
+    if use_reranker:
+        initial_k = max(initial_k, RERANKER_INITIAL_K)
+    if has_date_filter:
+        initial_k = max(initial_k, top_k * 5, 50)
+
     query_kwargs = {
         "query_texts": [query],
-        "n_results": max(top_k * 5, 50) if has_date_filter else top_k,
+        "n_results": initial_k,
     }
 
     results = collection.query(**query_kwargs)
@@ -84,6 +98,8 @@ def retrieve(query: str, top_k: int = TOP_K,
                 "distance": distance,
             })
 
+    if use_reranker:
+        return rerank(query, retrieved, top_k)
     return retrieved[:top_k]
 
 

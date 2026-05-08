@@ -8,8 +8,6 @@ import time
 # DIAGNOSTIC: timestamp every script run so terminal output shows where
 # wall-clock time goes between `streamlit run` and first paint.
 _T0 = time.perf_counter()
-
-
 def _ts(label: str) -> None:
     print(f"[+{time.perf_counter() - _T0:6.2f}s] {label}", flush=True)
 
@@ -26,6 +24,7 @@ from src.processing.embedder import (
     get_collection_lite,
     is_embedder_loaded,
 )
+from src.processing.reranker import get_reranker, is_reranker_loaded
 from src.rag import download_state
 from src.rag.download_state import (
     enqueue_citation_download,
@@ -159,6 +158,35 @@ def _kickoff_embedder_warmup() -> bool:
 _kickoff_embedder_warmup()
 
 
+@st.cache_resource
+def _kickoff_reranker_warmup() -> bool:
+    """Pre-warm the cross-encoder in a daemon thread on first run.
+
+    The cross-encoder is ~80MB and takes a few seconds to instantiate; doing
+    this at module load means the first reranked query doesn't pay the cost
+    on the user's critical path. Same pattern as the embedder warmup above —
+    the reranker module's own lock guarantees no double-loading even if the
+    user submits before this thread finishes.
+    """
+    def _warmup() -> None:
+        try:
+            get_reranker()
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[reranker-warmup] failed: {exc!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    thread = threading.Thread(target=_warmup, daemon=True, name="reranker-warmup")
+    add_script_run_ctx(thread)
+    thread.start()
+    return True
+
+
+_kickoff_reranker_warmup()
+
+
 def get_generate_answer_stream(backend: str):
     """Return the streaming generator function for the chosen backend."""
     if backend == "gemini":
@@ -235,6 +263,7 @@ def run_query(
     model_name: str,
     retrieval_query: str | None = None,
     backend: str = "ollama",
+    use_reranker: bool = False,
 ) -> None:
     """Execute one RAG query and append the result to session history."""
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -275,13 +304,17 @@ def run_query(
 
             # Stage 2: retrieve. The label depends on whether the embedder is
             # already warm — first query in a process pays the SentenceTransformer
-            # load (~17s) unless the background warmup beat them to it.
-            if is_embedder_loaded():
-                status.update(label="Retrieving relevant papers...")
-            else:
+            # load (~17s) unless the background warmup beat them to it. The
+            # reranker is much cheaper (~80MB, few seconds) and likewise warmed
+            # in the background, but flag it explicitly if it's still loading.
+            if not is_embedder_loaded():
                 status.update(
                     label="Loading embedding model (first-time only, ~17s)..."
                 )
+            elif use_reranker and not is_reranker_loaded():
+                status.update(label="Loading reranker (first-time only)...")
+            else:
+                status.update(label="Retrieving relevant papers...")
             try:
                 results = retrieve(
                     effective_retrieval_query,
@@ -289,6 +322,7 @@ def run_query(
                     start_date=start_date,
                     end_date=end_date,
                     collection=get_cached_collection(),
+                    use_reranker=use_reranker,
                 )
             except Exception as e:
                 status.update(label=f"Retrieval failed: {e}", state="error", expanded=True)
@@ -633,6 +667,15 @@ _ts("about to render sidebar")
 with st.sidebar:
     st.header("Settings")
     top_k = st.slider("Number of retrieved chunks", 1, 20, TOP_K)
+    use_reranker = st.toggle(
+        "Cross-encoder reranker",
+        value=True,
+        help=(
+            "Fetches a larger candidate pool from ChromaDB and re-ranks it "
+            "with a cross-encoder before truncating to top-k. Improves "
+            "ranking quality at the cost of ~50ms per query."
+        ),
+    )
     if st.button("Summarize new papers from last 7 days", use_container_width=True):
         st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
         st.session_state["pending_top_k"] = max(top_k, 12)
@@ -808,4 +851,5 @@ if active_prompt:
             top_k=active_top_k,
             model_name=model_name,
             backend=backend,
+            use_reranker=use_reranker,
         )

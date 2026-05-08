@@ -33,6 +33,13 @@ SEPARATORS = ["\n\n", "\n", ". ", " ", ""]
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 CHROMA_COLLECTION_NAME = "arxiv_cv_papers"
 
+# Reranker (second-stage retrieval refinement). The bi-encoder above is fast
+# but coarse; the cross-encoder below scores (query, candidate) pairs jointly
+# and produces a sharper ordering. We fetch RERANKER_INITIAL_K from ChromaDB
+# and rerank down to top_k.
+RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANKER_INITIAL_K = 20
+
 # Ollama / LLM settings
 OLLAMA_MODEL = "llama3.2"
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")

@@ -29,7 +29,7 @@ from src.processing.embedder import get_collection_lite
 if TYPE_CHECKING:
     import chromadb
 
-LOG_MAX_ENTRIES = 10
+LOG_MAX_ENTRIES = 100
 INLINE_CITATION_PATTERN = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 # Optional DI hook: long-running hosts (the Streamlit app) inject a cached
@@ -65,12 +65,19 @@ def _resolve_lite_collection() -> "chromadb.Collection":
 
 @dataclass
 class DownloadJobEntry:
-    arxiv_id: str
+    arxiv_id: str  # display id (cite_label initially, resolved id once known)
     status: str  # "pending" | "running" | "ok" | "failed" | "skipped"
     reason: str = ""
     started_at: str = ""
     finished_at: str = ""
     source_paper_id: str = ""
+    # Stable update key for upsert. Set to the cite_label
+    # (``{source}#[{idx}]``) for citation-driven jobs so the worker can
+    # transition pending → running → ok/failed without losing the original
+    # row even if the displayed ``arxiv_id`` changes when a real arXiv id
+    # gets resolved. Empty for non-citation entries (those upsert by
+    # ``arxiv_id``).
+    cite_label: str = ""
 
 
 _lock = threading.Lock()
@@ -94,11 +101,28 @@ def _safe_id(arxiv_id: str) -> str:
     return arxiv_id.replace("/", "_")
 
 
-def _push_log(entry: DownloadJobEntry) -> None:
+def _upsert_log(entry: DownloadJobEntry) -> None:
+    """Insert or update a log entry, keyed by ``cite_label`` when set,
+    otherwise ``arxiv_id``. Lets workers transition a pre-populated
+    pending row through running → ok/failed without spawning duplicates.
+    """
+    key = entry.cite_label or entry.arxiv_id
     with _lock:
-        _log.append(entry)
-    # Notify any UI poller that the log has new content.
+        for i, existing in enumerate(_log):
+            existing_key = existing.cite_label or existing.arxiv_id
+            if existing_key == key:
+                _log[i] = entry
+                break
+        else:
+            _log.append(entry)
     _log_changed.set()
+
+
+# Back-compat shim: callers that just want to append unconditionally still
+# work, but go through the same notify path. New code should use
+# :func:`_upsert_log` so pre-populated entries get updated in place.
+def _push_log(entry: DownloadJobEntry) -> None:
+    _upsert_log(entry)
 
 
 def take_log_change_signal() -> bool:
@@ -204,6 +228,10 @@ def enqueue_citation_download(
         global _busy_count
         _busy_count += 1
 
+    # Show the full work list to the user up-front. The worker will update
+    # each row in place as it progresses.
+    prepopulate_pending_entries(source_paper_id, citation_indices)
+
     def _run() -> None:
         try:
             worker(source_paper_id, citation_indices)
@@ -254,8 +282,16 @@ def record_result(
     reason: str = "",
     source_paper_id: str = "",
     started_at: str = "",
+    cite_label: str = "",
 ) -> None:
-    """Append a final result to the download log."""
+    """Insert or update a log entry.
+
+    When ``cite_label`` is supplied (citation-driven jobs), the row is
+    matched by cite_label so a pre-populated pending entry transitions
+    in place rather than producing a duplicate. Without ``cite_label``
+    the row is matched by ``arxiv_id`` (back-compat for callers that
+    don't track citation indices).
+    """
     entry = DownloadJobEntry(
         arxiv_id=arxiv_id,
         status=status,
@@ -263,8 +299,32 @@ def record_result(
         started_at=started_at or _now_iso(),
         finished_at=_now_iso(),
         source_paper_id=source_paper_id,
+        cite_label=cite_label,
     )
-    _push_log(entry)
+    _upsert_log(entry)
+
+
+def prepopulate_pending_entries(
+    source_paper_id: str, citation_indices: list[int]
+) -> None:
+    """Push a "pending" row per requested citation so the sidebar shows
+    the full work list immediately, before the background worker starts
+    resolving and downloading. Each row is keyed by ``cite_label`` and
+    later updated in place by :func:`record_result`.
+    """
+    started = _now_iso()
+    for idx in citation_indices:
+        cite_label = f"{source_paper_id}#[{idx}]"
+        entry = DownloadJobEntry(
+            arxiv_id=cite_label,
+            status="pending",
+            reason="",
+            started_at=started,
+            finished_at="",
+            source_paper_id=source_paper_id,
+            cite_label=cite_label,
+        )
+        _upsert_log(entry)
 
 
 def gate_check(arxiv_id: str) -> tuple[bool, str]:

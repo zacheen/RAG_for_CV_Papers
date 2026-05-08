@@ -37,18 +37,33 @@ def run_citation_download_job(
         references = resolve_references(source_paper_id)
     except CitationResolverError as exc:
         for idx in citation_indices:
+            cite_label = f"{source_paper_id}#[{idx}]"
             record_result(
-                arxiv_id=f"{source_paper_id}#[{idx}]",
+                arxiv_id=cite_label,
                 status="failed",
                 reason=f"resolve failed: {exc}",
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )
         return
 
     picked = pick_references(references, citation_indices)
     for idx, entry in picked:
         cite_label = f"{source_paper_id}#[{idx}]"
+
+        # Flip the pre-populated pending row to running so the user sees
+        # progress on the active citation. record_result upserts by
+        # cite_label, so this updates in place.
+        record_result(
+            arxiv_id=cite_label,
+            status="running",
+            reason="resolving",
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )
+
         if entry is None:
             record_result(
                 arxiv_id=cite_label,
@@ -56,6 +71,7 @@ def run_citation_download_job(
                 reason=f"index {idx} out of range",
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )
             continue
 
@@ -83,6 +99,7 @@ def run_citation_download_job(
                         reason=reason,
                         source_paper_id=source_paper_id,
                         started_at=started_at,
+                        cite_label=cite_label,
                     )
                     continue
                 if not mark_arxiv_in_flight(synthetic_id):
@@ -92,8 +109,17 @@ def run_citation_download_job(
                         reason="already in flight",
                         source_paper_id=source_paper_id,
                         started_at=started_at,
+                        cite_label=cite_label,
                     )
                     continue
+                record_result(
+                    arxiv_id=synthetic_id,
+                    status="running",
+                    reason="downloading via OA fallback",
+                    source_paper_id=source_paper_id,
+                    started_at=started_at,
+                    cite_label=cite_label,
+                )
                 try:
                     oa_result = ingest_pdf_from_url(
                         pdf_url, paper_id=synthetic_id, title=title
@@ -107,6 +133,7 @@ def run_citation_download_job(
                         reason=f"indexed {oa_result['chunks_indexed']} chunks (OA fallback)",
                         source_paper_id=source_paper_id,
                         started_at=started_at,
+                        cite_label=cite_label,
                     )
                 else:
                     record_result(
@@ -115,6 +142,7 @@ def run_citation_download_job(
                         reason=f"OA fallback: {oa_result.get('reason', 'unknown')}",
                         source_paper_id=source_paper_id,
                         started_at=started_at,
+                        cite_label=cite_label,
                     )
                 continue
 
@@ -137,6 +165,7 @@ def run_citation_download_job(
                 reason=" | ".join(reason_parts),
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )
             continue
 
@@ -149,6 +178,7 @@ def run_citation_download_job(
                 reason=reason,
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )
             continue
 
@@ -159,9 +189,18 @@ def run_citation_download_job(
                 reason="already in flight",
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )
             continue
 
+        record_result(
+            arxiv_id=arxiv_id,
+            status="running",
+            reason="downloading from arXiv",
+            source_paper_id=source_paper_id,
+            started_at=started_at,
+            cite_label=cite_label,
+        )
         try:
             result = ingest_paper(arxiv_id)
         finally:
@@ -174,6 +213,7 @@ def run_citation_download_job(
                 reason=f"indexed {result['chunks_indexed']} chunks",
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )
         else:
             record_result(
@@ -182,4 +222,5 @@ def run_citation_download_job(
                 reason=result.get("reason", "unknown"),
                 source_paper_id=source_paper_id,
                 started_at=started_at,
+                cite_label=cite_label,
             )

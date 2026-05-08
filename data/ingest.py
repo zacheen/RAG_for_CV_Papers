@@ -42,8 +42,18 @@ def run_ingestion(query: str = "", max_papers: int = ARXIV_MAX_RESULTS,
 
     # Step 2: Parse, chunk, and index
     total_chunks = 0
+    skipped_existing = 0
     for i, pdf_path in enumerate(pdf_paths):
         paper_id = pdf_path.stem
+
+        # Skip if this paper already has chunks in the DB. Without this, a
+        # re-run pays the parse + chunk + embed cost again and only avoids
+        # duplicate rows because index_chunks uses upsert by deterministic id.
+        existing = collection.get(where={"paper_id": paper_id}, limit=1)
+        if existing and existing.get("ids"):
+            skipped_existing += 1
+            continue
+
         meta = paper_lookup.get(paper_id, {})
         title = meta.get("title", paper_id)
         # Build arXiv abstract URL from paper ID
@@ -78,7 +88,8 @@ def run_ingestion(query: str = "", max_papers: int = ARXIV_MAX_RESULTS,
 
     # Step 3: Report
     print(f"\nIngestion complete!")
-    print(f"  Papers processed: {len(pdf_paths)}")
+    print(f"  Papers processed: {len(pdf_paths) - skipped_existing}")
+    print(f"  Papers skipped (already in DB): {skipped_existing}")
     print(f"  New chunks indexed: {total_chunks}")
     print(f"  Total chunks in collection: {get_chunk_count_fast()}")
 

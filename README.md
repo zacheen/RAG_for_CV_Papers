@@ -1,5 +1,10 @@
 # CS 6120 NLP Final Project - RAG for Computer Vision Papers
 
+> **Note (branch `Design_for_Gemini`):** this branch targets the Gemini API
+> backend only. The Ollama / LLaMA 3.2 path is intentionally out of scope here
+> — features on this branch (e.g. ReAct flow) are designed against Gemini's
+> Native Function Calling and are not guaranteed to work with Ollama.
+
 This project is a Retrieval-Augmented Generation system for computer vision papers. It ingests papers from arXiv, tracks trends from Hugging Face, stores paper content in ChromaDB, and supports both grounded follow-up Q&A and one-click summaries of papers published in the last 7 days.
 
 ## Presentation

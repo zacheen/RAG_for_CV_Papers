@@ -149,3 +149,85 @@ def ingest_paper(arxiv_id: str, *, output_dir: Path = PDF_DIR) -> dict:
         "chunks_indexed": indexed,
         "reason": "",
     }
+
+
+def ingest_pdf_from_url(
+    pdf_url: str,
+    *,
+    paper_id: str,
+    title: str = "",
+    output_dir: Path = PDF_DIR,
+) -> dict:
+    """Download a PDF directly from a URL and run the same ingest pipeline.
+
+    Used as the OA fallback when a cited paper has no arXiv id but Semantic
+    Scholar provides an ``openAccessPdf`` link. Reuses ``parse_pdf`` /
+    ``chunk_document`` / ``index_chunks`` so a non-arXiv paper appears in
+    ChromaDB with the same chunk shape, distinguished only by the synthetic
+    ``paper_id`` the caller picks (e.g. ``"ss_<paperId>"``).
+
+    Args:
+        pdf_url: Direct URL to the PDF.
+        paper_id: Stable id used for the on-disk filename, ChromaDB metadata
+            key, and the returned ``arxiv_id`` field. Caller picks the scheme
+            so it doesn't collide with arXiv ids; must be safe on Windows
+            (no ``/``, ``:``, ``\\``).
+        title: Reference title for chunk metadata. Falls back to ``paper_id``.
+        output_dir: Directory used for the PDF cache.
+
+    Returns:
+        Same shape as :func:`ingest_paper`. The ``arxiv_id`` field echoes the
+        synthetic ``paper_id`` so the download log keeps a single key.
+    """
+    pseudo_paper = {"id": paper_id, "pdf_url": pdf_url}
+    pdf_path = download_pdf(pseudo_paper, output_dir=output_dir)
+    if pdf_path is None:
+        return {
+            "status": "failed",
+            "arxiv_id": paper_id,
+            "chunks_indexed": 0,
+            "reason": "pdf download failed",
+        }
+
+    try:
+        parsed = parse_pdf(pdf_path)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "failed",
+            "arxiv_id": paper_id,
+            "chunks_indexed": 0,
+            "reason": f"pdf parse failed: {exc}",
+        }
+
+    text = parsed.get("text", "")
+    if len(text.strip()) < 100:
+        return {
+            "status": "failed",
+            "arxiv_id": paper_id,
+            "chunks_indexed": 0,
+            "reason": "too little text extracted",
+        }
+
+    chunks = chunk_document(
+        text,
+        paper_id=paper_id,
+        title=title or paper_id,
+        arxiv_url=pdf_url,
+    )
+
+    try:
+        indexed = index_chunks(chunks)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "failed",
+            "arxiv_id": paper_id,
+            "chunks_indexed": 0,
+            "reason": f"index failed: {exc}",
+        }
+
+    return {
+        "status": "ok",
+        "arxiv_id": paper_id,
+        "chunks_indexed": indexed,
+        "reason": "",
+    }

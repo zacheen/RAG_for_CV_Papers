@@ -55,6 +55,7 @@ def resolve_references(arxiv_id: str, *, max_refs: int = 200) -> list[dict]:
             - ``arxiv_id``: str | None
             - ``title``: str
             - ``paper_id_ss``: Semantic Scholar paper id (may be empty)
+            - ``pdf_url``: str | None — open-access PDF URL when SS has one
 
     Raises:
         CitationResolverError: On network / parsing failures.
@@ -62,7 +63,7 @@ def resolve_references(arxiv_id: str, *, max_refs: int = 200) -> list[dict]:
     paper_ref = f"arXiv:{_strip_version(arxiv_id)}"
     params = urllib.parse.urlencode(
         {
-            "fields": "externalIds,title",
+            "fields": "externalIds,title,openAccessPdf",
             "limit": max_refs,
         }
     )
@@ -89,11 +90,13 @@ def resolve_references(arxiv_id: str, *, max_refs: int = 200) -> list[dict]:
     for entry in data:
         cited = (entry or {}).get("citedPaper") or {}
         external = cited.get("externalIds") or {}
+        oa = cited.get("openAccessPdf") or {}
         refs.append(
             {
                 "arxiv_id": external.get("ArXiv"),
                 "title": cited.get("title", ""),
                 "paper_id_ss": cited.get("paperId", ""),
+                "pdf_url": oa.get("url") or None,
             }
         )
     return refs

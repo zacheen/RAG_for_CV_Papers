@@ -157,6 +157,7 @@ def _process_one_citation(
                     source_paper_id=source_paper_id,
                     started_at=started_at,
                     cite_label=cite_label,
+                    title=title,
                 )
                 return
             if not mark_arxiv_in_flight(synthetic_id):
@@ -167,6 +168,7 @@ def _process_one_citation(
                     source_paper_id=source_paper_id,
                     started_at=started_at,
                     cite_label=cite_label,
+                    title=title,
                 )
                 return
             record_result(
@@ -176,6 +178,7 @@ def _process_one_citation(
                 source_paper_id=source_paper_id,
                 started_at=started_at,
                 cite_label=cite_label,
+                title=title,
             )
             try:
                 oa_result = ingest_pdf_from_url(
@@ -191,6 +194,7 @@ def _process_one_citation(
                     source_paper_id=source_paper_id,
                     started_at=started_at,
                     cite_label=cite_label,
+                    title=title,
                 )
             else:
                 record_result(
@@ -200,6 +204,7 @@ def _process_one_citation(
                     source_paper_id=source_paper_id,
                     started_at=started_at,
                     cite_label=cite_label,
+                    title=title,
                 )
             return
 
@@ -223,6 +228,7 @@ def _process_one_citation(
             source_paper_id=source_paper_id,
             started_at=started_at,
             cite_label=cite_label,
+            title=title,
         )
         return
 
@@ -236,6 +242,7 @@ def _process_one_citation(
             source_paper_id=source_paper_id,
             started_at=started_at,
             cite_label=cite_label,
+            title=title,
         )
         return
 
@@ -247,6 +254,7 @@ def _process_one_citation(
             source_paper_id=source_paper_id,
             started_at=started_at,
             cite_label=cite_label,
+            title=title,
         )
         return
 
@@ -257,6 +265,7 @@ def _process_one_citation(
         source_paper_id=source_paper_id,
         started_at=started_at,
         cite_label=cite_label,
+        title=title,
     )
     try:
         result = ingest_paper(arxiv_id)
@@ -271,6 +280,7 @@ def _process_one_citation(
             source_paper_id=source_paper_id,
             started_at=started_at,
             cite_label=cite_label,
+            title=title,
         )
     else:
         record_result(
@@ -280,4 +290,5 @@ def _process_one_citation(
             source_paper_id=source_paper_id,
             started_at=started_at,
             cite_label=cite_label,
+            title=title,
         )

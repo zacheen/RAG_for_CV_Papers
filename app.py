@@ -697,7 +697,11 @@ with st.sidebar:
                     "running": "[...]",
                     "pending": "[...]",
                 }.get(entry.status, "[?]")
-                line = f"{icon} `{entry.arxiv_id}`"
+                # Prefer the human-readable title once it's resolved; fall
+                # back to arxiv_id (which is the cite_label for pending /
+                # pre-resolve rows).
+                display = entry.title or entry.arxiv_id
+                line = f"{icon} `{display}`"
                 if entry.reason:
                     line += f" — {entry.reason}"
                 st.markdown(line)

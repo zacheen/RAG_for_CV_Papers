@@ -78,6 +78,10 @@ class DownloadJobEntry:
     # gets resolved. Empty for non-citation entries (those upsert by
     # ``arxiv_id``).
     cite_label: str = ""
+    # Resolved paper title from Semantic Scholar (or arXiv title-search).
+    # Empty until the reference list resolves; the sidebar prefers this over
+    # ``arxiv_id`` for human-readable display once it's set.
+    title: str = ""
 
 
 _lock = threading.Lock()
@@ -283,6 +287,7 @@ def record_result(
     source_paper_id: str = "",
     started_at: str = "",
     cite_label: str = "",
+    title: str = "",
 ) -> None:
     """Insert or update a log entry.
 
@@ -300,6 +305,7 @@ def record_result(
         finished_at=_now_iso(),
         source_paper_id=source_paper_id,
         cite_label=cite_label,
+        title=title,
     )
     _upsert_log(entry)
 

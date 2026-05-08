@@ -514,6 +514,104 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
 
 st.set_page_config(page_title="CV Paper RAG", page_icon="CV", layout="wide")
 
+# Tighten Streamlit's default top padding (~6rem) on the main content and
+# sidebar so the title / Settings header sit closer to the page top.
+# Multiple selectors cover Streamlit version differences; !important wins
+# over the framework's inline rules.
+st.markdown(
+    """
+    <style>
+    /* Make the Streamlit header transparent but keep its height — collapsing
+       it shrinks the floating sidebar-reopen button out of the viewport. */
+    [data-testid="stHeader"] {
+        background: transparent !important;
+    }
+
+    /* Main content padding */
+    [data-testid="stMainBlockContainer"],
+    [data-testid="stAppViewContainer"] .main .block-container,
+    .main .block-container {
+        padding-top: 1rem !important;
+    }
+
+    /* Sidebar reopen button when collapsed: pin to a safe top/left so it
+       can't clip above the viewport. Both testids cover Streamlit version
+       differences (>=1.27 uses stSidebarCollapsedControl). */
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="collapsedControl"] {
+        top: 0.5rem !important;
+        left: 0.5rem !important;
+        z-index: 999 !important;
+    }
+
+    /* Sidebar close-button strip: take it out of normal flow so "Settings"
+       can render flush at the top, and pin the close button to top-right
+       at a comfortable offset (instead of being jammed against the edge). */
+    section[data-testid="stSidebar"] {
+        position: relative !important;
+    }
+    [data-testid="stSidebarHeader"] {
+        position: absolute !important;
+        top: 0.5rem !important;
+        right: 0.5rem !important;
+        z-index: 2 !important;
+        min-height: 0 !important;
+        height: auto !important;
+        width: auto !important;
+        padding: 0 !important;
+    }
+    [data-testid="stSidebarHeader"] > div {
+        padding: 0 !important;
+    }
+
+    /* Sidebar inner padding: zero out so the first heading sits flush with
+       the close-button strip. */
+    [data-testid="stSidebarNav"] {
+        padding: 0 !important;
+    }
+    section[data-testid="stSidebar"],
+    section[data-testid="stSidebar"] > div,
+    section[data-testid="stSidebar"] > div > div,
+    [data-testid="stSidebarContent"] {
+        padding-top: 0 !important;
+        margin-top: 0 !important;
+    }
+    [data-testid="stSidebarUserContent"],
+    section[data-testid="stSidebar"] .block-container {
+        padding-top: 0 !important;
+    }
+    /* Pull each non-first sidebar header closer to the divider above it.
+       Targets only stElementContainers that (a) contain an h2 AND (b) are
+       preceded by an hr-wrapper — so the first "Settings" header (no hr
+       before it) and other widgets' inter-spacing are untouched. */
+    section[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(hr)
+        + [data-testid="stElementContainer"]:has(h2) {
+        margin-top: -1rem !important;
+    }
+    section[data-testid="stSidebar"] h2 {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+    }
+    section[data-testid="stSidebar"] h2:first-of-type {
+        margin-top: 1rem !important;
+    }
+
+    /* Tighten vertical spacing around sidebar dividers (st.divider()). */
+    section[data-testid="stSidebar"] hr,
+    section[data-testid="stSidebar"] [data-testid="stDivider"] {
+        margin-top: 0rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    /* Pull each divider closer to the widget above it (shrink prev->divider
+       gap) by negative-margining its element-container. */
+    section[data-testid="stSidebar"] [data-testid="stElementContainer"]:has(hr) {
+        margin-top: -0.5rem !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if "messages" not in st.session_state:
     st.session_state["messages"] = [
         {
@@ -534,7 +632,6 @@ _ts("about to render sidebar")
 
 with st.sidebar:
     st.header("Settings")
-    your_name = st.text_input("Your name")
     top_k = st.slider("Number of retrieved chunks", 1, 20, TOP_K)
     if st.button("Summarize new papers from last 7 days", use_container_width=True):
         st.session_state["pending_prompt"] = WEEKLY_SUMMARY_PROMPT
@@ -549,22 +646,18 @@ with st.sidebar:
             "end_date": _today.isoformat(),
         }
 
-    backend_options = ["ollama", "gemini"]
-    default_backend_index = backend_options.index(LLM_BACKEND) if LLM_BACKEND in backend_options else 0
-    backend = st.selectbox(
-        "LLM backend",
-        backend_options,
-        index=default_backend_index,
-        help="ollama = local/VM Ollama (original). gemini = Google AI Studio Gemini free tier.",
-    )
-    if backend == "gemini":
-        model_name = st.text_input("Gemini model", value=GEMINI_MODEL)
-        st.caption(
-            "Set GOOGLE_API_KEY env var. "
-            "Get a free key at https://aistudio.google.com/apikey"
-        )
+    st.divider()
+    if generator_gemini.last_pre_rag_error:
+        st.error(generator_gemini.last_pre_rag_error)
+    st.header("Cleaned retrieval query")
+    if retrieval_query_state.cleaned:
+        st.code(retrieval_query_state.cleaned, language="text")
     else:
-        model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
+        st.write("No query processed yet.")
+    st.caption(
+        "The user's question after the pre-RAG pass strips date filters and "
+        "citation requests, used as the vector-retrieval query (Gemini backend)."
+    )
 
     st.divider()
     st.header("Current search range")
@@ -573,22 +666,6 @@ with st.sidebar:
         "Set automatically when you mention dates in chat (Gemini backend). "
         "Say \"ignore the time filter\" to clear."
     )
-
-    st.divider()
-    st.header("Pre-RAG debug")
-    if generator_gemini.last_pre_rag_error:
-        st.error(generator_gemini.last_pre_rag_error)
-    if retrieval_query_state.cleaned:
-        st.caption("Cleaned retrieval query:")
-        st.code(retrieval_query_state.cleaned, language="text")
-    if rag_tools.last_call_log:
-        st.caption("Last turn function calls:")
-        for line in rag_tools.last_call_log:
-            st.code(line, language="text")
-    elif backend == "gemini" and not generator_gemini.last_pre_rag_error:
-        st.caption("No tool calls fired in the last turn.")
-    else:
-        st.caption("(Gemini backend only)")
 
     st.divider()
     st.header("Download log")
@@ -640,6 +717,33 @@ with st.sidebar:
     _download_log_fragment()
 
     st.divider()
+    backend_options = ["ollama", "gemini"]
+    default_backend_index = backend_options.index(LLM_BACKEND) if LLM_BACKEND in backend_options else 0
+    backend = st.selectbox(
+        "LLM backend",
+        backend_options,
+        index=default_backend_index,
+        help="ollama = local/VM Ollama (original). gemini = Google AI Studio Gemini free tier.",
+    )
+    if backend == "gemini":
+        model_name = st.text_input("Gemini model", value=GEMINI_MODEL)
+        st.caption(
+            "Set GOOGLE_API_KEY env var. "
+            "Get a free key at https://aistudio.google.com/apikey"
+        )
+    else:
+        model_name = st.text_input("Ollama model", value=OLLAMA_MODEL)
+
+    st.divider()
+    with st.expander("Last turn function calls", expanded=False):
+        if rag_tools.last_call_log:
+            for line in rag_tools.last_call_log:
+                st.code(line, language="text")
+        elif backend == "gemini" and not generator_gemini.last_pre_rag_error:
+            st.caption("No tool calls fired in the last turn.")
+        else:
+            st.caption("(Gemini backend only)")
+
     with st.expander("Collection Stats", expanded=False):
         try:
             _ts("  before get_cached_chunk_count()")
@@ -649,18 +753,9 @@ with st.sidebar:
         except Exception:
             st.warning("No indexed data yet. Run the ingestion script first.")
 
-    st.divider()
-    st.caption(
-        "RAG system for arXiv CS.CV papers. "
-        "Built for CS 6120 NLP Final Project."
-    )
-
 _ts("sidebar rendered, about to render main area")
 
-if your_name:
-    st.title(f"Hi {your_name} - Ask about CV papers")
-else:
-    st.title("Computer Vision Paper RAG")
+st.title("Computer Vision Paper RAG")
 
 if backend == "gemini":
     st.caption(f"Powered by {model_name} via Google AI Studio + ChromaDB retrieval")

@@ -25,7 +25,7 @@ The ingestion script queries the [arXiv API](https://info.arxiv.org/help/api/ind
 | Category | `cs.CV` | Computer Vision and Pattern Recognition |
 | Sort by | `submittedDate` | Most recently submitted papers first |
 | Sort order | `descending` | Newest first |
-| Max results | `800` | Target: 800 papers x ~20 chunks = ~16k entries (>10k requirement) |
+| Max results | `800` | Target: 800 papers x ~20 chunks = ~16k entries |
 | Query filter | (none) | Optional free-text filter via `--query` |
 
 ### Run Ingestion
@@ -54,8 +54,6 @@ data/
 ```bash
 python -c "from src.processing.embedder import get_collection_stats; print(get_collection_stats())"
 ```
-
-Should show `total_chunks >= 10000`.
 
 ### Time Estimate
 
@@ -105,7 +103,6 @@ final_project/
   entrypoint.sh                # Container startup (Ollama + Streamlit only)
   .gitignore
   CLAUDE.md                    # Agent guidance
-  project-description.pdf      # Course assignment spec
   data/
     ingest.py                  # CLI ingestion pipeline (run locally)
     get_past_trend.py          # HF Daily Papers backfill

@@ -191,3 +191,4 @@ arXiv API / Hugging Face Daily Papers
 | Design decisions log | [architecture/design-decisions.md](architecture/design-decisions.md) |
 | Local ingestion & setup | [development/setup.md](development/setup.md) |
 | GCP deployment guide | [development/gcp-deployment.md](development/gcp-deployment.md) |
+| Modeling-level cautions | [Caution.md](Caution.md) |

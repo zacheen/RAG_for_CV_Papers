@@ -275,6 +275,12 @@ def run_query(
 
     triggered_paths: list[str] = []
 
+    # Reset per-turn retrieval state so a stale cleaned query from a prior
+    # turn (e.g. a Gemini turn before switching to Ollama) doesn't leak in.
+    # Gemini's pre-RAG pass also clears this internally; keeping the clear
+    # here makes the invariant backend-agnostic.
+    retrieval_query_state.clear()
+
     with st.chat_message("assistant"):
         with st.status("Processing your question...", expanded=True) as status:
             # Stage 1: pre-RAG function-calling pass (Gemini only).
@@ -301,6 +307,10 @@ def run_query(
                 or retrieval_query_state.cleaned
                 or prompt
             )
+            # Reflect the actual query sent to ChromaDB + reranker into the
+            # sidebar state, regardless of whether it came from rewrite_retrieval_query
+            # (Gemini), a caller override, or the raw prompt.
+            retrieval_query_state.set(effective_retrieval_query)
 
             # Stage 2: retrieve. The label depends on whether the embedder is
             # already warm — first query in a process pays the SentenceTransformer
@@ -444,6 +454,11 @@ def run_recent_summary(prompt: str, top_k: int, recent_days: int, model_name: st
         st.write(prompt)
 
     _wait_for_downloads()
+
+    # Recent-summary mode does a metadata-only lookup, no vector retrieval —
+    # clear the sidebar's retrieval query so it doesn't show a stale value
+    # from a previous chat turn.
+    retrieval_query_state.clear()
 
     with st.chat_message("assistant"):
         with st.status(
@@ -692,14 +707,15 @@ with st.sidebar:
     st.divider()
     if generator_gemini.last_pre_rag_error:
         st.error(generator_gemini.last_pre_rag_error)
-    st.header("Cleaned retrieval query")
+    st.header("Retrieval query")
     if retrieval_query_state.cleaned:
         st.code(retrieval_query_state.cleaned, language="text")
     else:
-        st.write("No query processed yet.")
+        st.write("No query yet.")
     st.caption(
-        "The user's question after the pre-RAG pass strips date filters and "
-        "citation requests, used as the vector-retrieval query (Gemini backend)."
+        "The query string actually sent to ChromaDB and the reranker. "
+        "Function/tool `rewrite_retrieval_query` tool may strip "
+        "date filters and conversational filler from the raw prompt"
     )
 
     st.divider()
